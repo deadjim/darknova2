@@ -1,0 +1,156 @@
+// Pure Dart — no Flutter imports
+import 'package:equatable/equatable.dart';
+
+import 'commander.dart';
+import 'enums.dart';
+import 'ship.dart';
+import 'solar_system.dart';
+
+class GameState extends Equatable {
+  final Commander commander;
+  final Ship ship;
+  final int credits;
+  final int debt;
+  final int days;
+  final int currentSystemIndex;
+  final int galaxySeed;
+  final DifficultyLevel difficulty;
+  final List<SolarSystem> solarSystems;
+  final int? warpTargetIndex;
+  final Map<TradeGood, int> buyPrices;
+  final Map<TradeGood, int> sellPrices;
+  final bool escapePod;
+  final bool insurance;
+  final int noClaim; // days since last insurance claim
+
+  const GameState({
+    required this.commander,
+    required this.ship,
+    required this.credits,
+    required this.debt,
+    required this.days,
+    required this.currentSystemIndex,
+    required this.galaxySeed,
+    required this.difficulty,
+    required this.solarSystems,
+    this.warpTargetIndex,
+    required this.buyPrices,
+    required this.sellPrices,
+    required this.escapePod,
+    required this.insurance,
+    required this.noClaim,
+  });
+
+  SolarSystem get currentSystem => solarSystems[currentSystemIndex];
+
+  int get netWorth {
+    // credits + ship trade-in value (50% of price) + cargo approx - debt
+    final shipValue = ship.def.price ~/ 2;
+    final cargoApprox = ship.totalCargoUsed * 100;
+    return credits + shipValue + cargoApprox - debt;
+  }
+
+  GameState copyWith({
+    Commander? commander,
+    Ship? ship,
+    int? credits,
+    int? debt,
+    int? days,
+    int? currentSystemIndex,
+    int? galaxySeed,
+    DifficultyLevel? difficulty,
+    List<SolarSystem>? solarSystems,
+    Object? warpTargetIndex = _sentinel,
+    Map<TradeGood, int>? buyPrices,
+    Map<TradeGood, int>? sellPrices,
+    bool? escapePod,
+    bool? insurance,
+    int? noClaim,
+  }) {
+    return GameState(
+      commander: commander ?? this.commander,
+      ship: ship ?? this.ship,
+      credits: credits ?? this.credits,
+      debt: debt ?? this.debt,
+      days: days ?? this.days,
+      currentSystemIndex: currentSystemIndex ?? this.currentSystemIndex,
+      galaxySeed: galaxySeed ?? this.galaxySeed,
+      difficulty: difficulty ?? this.difficulty,
+      solarSystems: solarSystems ?? List.from(this.solarSystems),
+      warpTargetIndex: warpTargetIndex == _sentinel
+          ? this.warpTargetIndex
+          : warpTargetIndex as int?,
+      buyPrices: buyPrices ?? Map.from(this.buyPrices),
+      sellPrices: sellPrices ?? Map.from(this.sellPrices),
+      escapePod: escapePod ?? this.escapePod,
+      insurance: insurance ?? this.insurance,
+      noClaim: noClaim ?? this.noClaim,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'commander': commander.toJson(),
+      'ship': ship.toJson(),
+      'credits': credits,
+      'debt': debt,
+      'days': days,
+      'currentSystemIndex': currentSystemIndex,
+      'galaxySeed': galaxySeed,
+      'difficulty': difficulty.index,
+      'solarSystems': solarSystems.map((s) => s.toJson()).toList(),
+      'warpTargetIndex': warpTargetIndex,
+      'buyPrices': buyPrices.map((k, v) => MapEntry(k.index.toString(), v)),
+      'sellPrices': sellPrices.map((k, v) => MapEntry(k.index.toString(), v)),
+      'escapePod': escapePod,
+      'insurance': insurance,
+      'noClaim': noClaim,
+    };
+  }
+
+  factory GameState.fromJson(Map<String, dynamic> json) {
+    final rawBuy = json['buyPrices'] as Map<String, dynamic>;
+    final rawSell = json['sellPrices'] as Map<String, dynamic>;
+    final buyPrices = <TradeGood, int>{};
+    final sellPrices = <TradeGood, int>{};
+    rawBuy.forEach((k, v) => buyPrices[TradeGood.values[int.parse(k)]] = v as int);
+    rawSell.forEach((k, v) => sellPrices[TradeGood.values[int.parse(k)]] = v as int);
+    return GameState(
+      commander: Commander.fromJson(json['commander'] as Map<String, dynamic>),
+      ship: Ship.fromJson(json['ship'] as Map<String, dynamic>),
+      credits: json['credits'] as int,
+      debt: json['debt'] as int,
+      days: json['days'] as int,
+      currentSystemIndex: json['currentSystemIndex'] as int,
+      galaxySeed: json['galaxySeed'] as int,
+      difficulty: DifficultyLevel.values[json['difficulty'] as int],
+      solarSystems: (json['solarSystems'] as List)
+          .map((s) => SolarSystem.fromJson(s as Map<String, dynamic>))
+          .toList(),
+      warpTargetIndex: json['warpTargetIndex'] as int?,
+      buyPrices: buyPrices,
+      sellPrices: sellPrices,
+      escapePod: json['escapePod'] as bool,
+      insurance: json['insurance'] as bool,
+      noClaim: json['noClaim'] as int,
+    );
+  }
+
+  @override
+  List<Object?> get props => [
+        commander,
+        ship,
+        credits,
+        debt,
+        days,
+        currentSystemIndex,
+        galaxySeed,
+        difficulty,
+        warpTargetIndex,
+        escapePod,
+        insurance,
+        noClaim,
+      ];
+}
+
+const Object _sentinel = Object();
