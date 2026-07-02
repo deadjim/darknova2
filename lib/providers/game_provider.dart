@@ -1,19 +1,31 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../engine/combat.dart';
 import '../engine/economy.dart';
+import '../engine/encounter.dart';
 import '../engine/game_engine.dart';
 import '../engine/travel.dart';
 import '../models/enums.dart';
 import '../models/game_state.dart';
+import '../models/ship.dart';
 import '../models/solar_system.dart';
 
 const String _saveKey = 'darknova2_save';
 
 class GameStateNotifier extends StateNotifier<GameState?> {
-  GameStateNotifier() : super(null);
+  GameStateNotifier(this._ref) : super(null);
+
+  final Ref _ref;
+
+  /// Replace the game state directly (used by the encounter flow).
+  void applyGameState(GameState newState) {
+    state = newState;
+    saveGame();
+  }
 
   // ---------------------------------------------------------------------------
   // Game lifecycle
@@ -71,11 +83,20 @@ class GameStateNotifier extends StateNotifier<GameState?> {
   // Travel
   // ---------------------------------------------------------------------------
 
-  void warpTo(int targetIndex) {
+  /// Warp to a system. Returns true if an encounter interrupts the trip
+  /// (the caller should route to the encounter screen).
+  bool warpTo(int targetIndex) {
     final current = state;
-    if (current == null) return;
+    if (current == null) return false;
+    final couldWarp = Travel.canReach(current.currentSystem,
+        current.solarSystems[targetIndex], current.ship);
     state = GameEngine.warpTo(current, targetIndex);
     saveGame();
+    if (!couldWarp) return false;
+    final encounter = GameEngine.rollEncounter(state!);
+    if (encounter == null) return false;
+    _ref.read(encounterProvider.notifier).begin(encounter, state!.ship);
+    return true;
   }
 
   void selectWarpTarget(int? index) {
@@ -247,7 +268,79 @@ class GameStateNotifier extends StateNotifier<GameState?> {
 
 final gameProvider =
     StateNotifierProvider<GameStateNotifier, GameState?>(
-  (ref) => GameStateNotifier(),
+  (ref) => GameStateNotifier(ref),
+);
+
+// ---------------------------------------------------------------------------
+// Encounters
+// ---------------------------------------------------------------------------
+
+/// Drives an active encounter. Combat actions mutate both the transient
+/// [CombatState] here and the persistent [GameState] via [gameProvider].
+class EncounterNotifier extends StateNotifier<CombatState?> {
+  EncounterNotifier(this._ref) : super(null);
+
+  final Ref _ref;
+  final Random _rng = Random();
+
+  void begin(EncounterResult encounter, Ship playerShip) {
+    state = CombatState.begin(encounter, playerShip);
+  }
+
+  void clear() => state = null;
+
+  void _apply(CombatResult? result) {
+    if (result == null) return;
+    state = result.combat;
+    _ref.read(gameProvider.notifier).applyGameState(result.game);
+  }
+
+  void attack() {
+    final c = state;
+    final game = _ref.read(gameProvider);
+    if (c == null || game == null || c.isOver) return;
+    _apply(Combat.attack(c, game, _rng));
+  }
+
+  void flee() {
+    final c = state;
+    final game = _ref.read(gameProvider);
+    if (c == null || game == null || c.isOver) return;
+    _apply(Combat.flee(c, game, _rng));
+  }
+
+  void surrender() {
+    final c = state;
+    final game = _ref.read(gameProvider);
+    if (c == null || game == null || c.isOver) return;
+    _apply(Combat.surrender(c, game));
+  }
+
+  void submit() {
+    final c = state;
+    final game = _ref.read(gameProvider);
+    if (c == null || game == null || c.isOver) return;
+    _apply(Combat.submit(c, game));
+  }
+
+  void bribe() {
+    final c = state;
+    final game = _ref.read(gameProvider);
+    if (c == null || game == null || c.isOver) return;
+    _apply(Combat.bribe(c, game));
+  }
+
+  void depart() {
+    final c = state;
+    final game = _ref.read(gameProvider);
+    if (c == null || game == null || c.isOver) return;
+    _apply(Combat.depart(c, game));
+  }
+}
+
+final encounterProvider =
+    StateNotifierProvider<EncounterNotifier, CombatState?>(
+  (ref) => EncounterNotifier(ref),
 );
 
 /// The current solar system (non-null only when game is active).

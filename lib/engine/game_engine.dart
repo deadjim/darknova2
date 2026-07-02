@@ -8,6 +8,7 @@ import '../models/ship.dart';
 import '../models/ship_type_def.dart';
 import '../models/solar_system.dart';
 import 'economy.dart';
+import 'encounter.dart';
 import 'galaxy_generator.dart';
 import 'travel.dart';
 
@@ -65,6 +66,16 @@ class GameEngine {
   /// Warp to a target system.
   static GameState warpTo(GameState state, int targetIndex) {
     return Travel.warpTo(state, targetIndex);
+  }
+
+  /// Roll for an encounter at the current system (call after a warp).
+  /// Returns null when the trip is uneventful.
+  static EncounterResult? rollEncounter(GameState state) {
+    final type = Encounter.rollEncounter(
+        state.currentSystem, state.commander, state.difficulty);
+    if (type == null) return null;
+    return Encounter.generateEncounter(
+        type, state.currentSystem, state.difficulty);
   }
 
   /// Buy a trade good. Returns updated state or null if transaction invalid.

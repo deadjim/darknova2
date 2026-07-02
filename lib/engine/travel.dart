@@ -6,7 +6,6 @@ import '../models/game_state.dart';
 import '../models/ship.dart';
 import '../models/solar_system.dart';
 import 'economy.dart';
-import 'encounter.dart' as enc;
 
 class Travel {
   Travel._();
@@ -96,10 +95,6 @@ class Travel {
     // Auto-repair from Engineer gadget.
     final autoRepaired = _autoRepair(newShip, state.commander.engineer);
 
-    // Roll encounter.
-    final encounterType = enc.Encounter.rollEncounter(
-        to, state.commander, state.difficulty);
-
     // Advance the day.
     final newDays = state.days + 1;
 
@@ -119,7 +114,7 @@ class Travel {
       days: newDays,
       debt: newDebt,
       solarSystems: driftedSystems,
-      warpTargetIndex: encounterType != null ? targetIndex : null,
+      warpTargetIndex: null,
       buyPrices: newBuyPrices,
       sellPrices: newSellPrices,
     );

@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import 'providers/game_provider.dart';
 import 'screens/commander_screen.dart';
+import 'screens/encounter_screen.dart';
 import 'screens/galaxy_map_screen.dart';
 import 'screens/hub_screen.dart';
 import 'screens/new_game_screen.dart';
@@ -45,6 +46,10 @@ final _router = GoRouter(
     GoRoute(
       path: '/commander',
       builder: (context, state) => const CommanderScreen(),
+    ),
+    GoRoute(
+      path: '/encounter',
+      builder: (context, state) => const EncounterScreen(),
     ),
   ],
 );
