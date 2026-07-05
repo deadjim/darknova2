@@ -2,11 +2,14 @@
 import 'dart:math';
 
 import '../models/enums.dart';
+import '../models/game_event.dart';
 import '../models/game_state.dart';
 import '../models/government_def.dart';
 import '../models/ship.dart';
 import '../models/ship_type_def.dart';
 import 'encounter.dart';
+import 'events.dart';
+import 'rivals.dart';
 
 /// How a combat encounter ended (or hasn't yet).
 enum CombatOutcome {
@@ -42,6 +45,8 @@ class CombatState {
   final int playerMaxShieldHp;
   final CombatOutcome outcome;
   final List<String> log;
+  final String? rivalId;
+  final String? captainName;
 
   const CombatState({
     required this.encounterType,
@@ -59,6 +64,8 @@ class CombatState {
     required this.playerMaxShieldHp,
     required this.outcome,
     required this.log,
+    this.rivalId,
+    this.captainName,
   });
 
   factory CombatState.begin(EncounterResult encounter, Ship playerShip) {
@@ -83,6 +90,8 @@ class CombatState {
       playerMaxShieldHp: playerShields,
       outcome: CombatOutcome.ongoing,
       log: const [],
+      rivalId: encounter.rivalId,
+      captainName: encounter.captainName,
     );
   }
 
@@ -117,6 +126,8 @@ class CombatState {
       playerMaxShieldHp: playerMaxShieldHp,
       outcome: outcome ?? this.outcome,
       log: log ?? this.log,
+      rivalId: rivalId,
+      captainName: captainName,
     );
   }
 
@@ -207,6 +218,7 @@ class Combat {
         combat = combat
             .addLog('The ${combat.npcDef.displayName} escapes into the void.')
             .copyWith(outcome: CombatOutcome.npcFled);
+        state = _recordSurvivorEscaped(combat, state);
         return CombatResult(combat, state);
       }
       combat = combat.addLog('It fails to break away!');
@@ -237,6 +249,15 @@ class Combat {
       combat = combat
           .addLog('You slam the throttle and slip away.')
           .copyWith(outcome: CombatOutcome.playerFled);
+      // The other ship survived — the story gets out.
+      state = EventLedger.record(state, GameEventType.fledCombat,
+          witnessed: true,
+          rivalId: combat.rivalId,
+          detail: combat.encounterType.name);
+      if (combat.rivalId != null) {
+        state = RivalSystem.updateRival(
+            state, combat.rivalId!, (r) => r.copyWith(grudge: r.grudge + 1));
+      }
       return CombatResult(combat, state);
     }
 
@@ -254,10 +275,17 @@ class Combat {
     final cargoLost = game.ship.totalCargoUsed;
     final creditsLost = min(game.credits, max(500, game.credits ~/ 10));
     final newShip = game.ship.copyWith(cargo: {});
-    final state = game.copyWith(
+    var state = game.copyWith(
       ship: newShip,
       credits: game.credits - creditsLost,
     );
+    state = EventLedger.record(state, GameEventType.surrenderedToPirates,
+        witnessed: true, rivalId: c.rivalId);
+    if (c.rivalId != null) {
+      // A rival who robbed you blind is, briefly, satisfied.
+      state = RivalSystem.updateRival(
+          state, c.rivalId!, (r) => r.copyWith(grudge: r.grudge - 2));
+    }
     final combat = c
         .addLog('The pirates strip your hold of $cargoLost units of cargo '
             'and $creditsLost credits, then let you go.')
@@ -276,13 +304,15 @@ class Combat {
 
     if (narcotics > 0 || firearms > 0) {
       final fine = max(100, (game.credits ~/ 10) ~/ 50 * 50);
-      final state = game.copyWith(
+      var state = game.copyWith(
         ship: game.ship.copyWith(cargo: cargo),
         credits: max(0, game.credits - fine),
         commander: game.commander.copyWith(
           policeRecordScore: game.commander.policeRecordScore - 5,
         ),
       );
+      state = EventLedger.record(state, GameEventType.inspectionBusted,
+          witnessed: true);
       final combat = c
           .addLog('Contraband found! The police confiscate '
               '${narcotics + firearms} units and fine you $fine credits.')
@@ -290,11 +320,13 @@ class Combat {
       return CombatResult(combat, state);
     }
 
-    final state = game.copyWith(
+    var state = game.copyWith(
       commander: game.commander.copyWith(
         policeRecordScore: game.commander.policeRecordScore + 1,
       ),
     );
+    state = EventLedger.record(state, GameEventType.inspectionClean,
+        witnessed: true);
     final combat = c
         .addLog('The police find nothing illegal and wave you through.')
         .copyWith(outcome: CombatOutcome.inspectionClean);
@@ -320,7 +352,10 @@ class Combat {
       return CombatResult(combat, game);
     }
 
-    final state = game.copyWith(credits: game.credits - amount);
+    var state = game.copyWith(credits: game.credits - amount);
+    // Bribes are quiet — the officer isn't advertising this.
+    state = EventLedger.record(state, GameEventType.policeBribed,
+        witnessed: false);
     final combat = c
         .addLog('$amount credits change hands. The patrol suddenly '
             'remembers urgent business elsewhere.')
@@ -336,13 +371,38 @@ class Combat {
       // Police insist on an inspection — submit, bribe, flee, or fight.
       return null;
     }
+    var state = game;
+    if (c.npcFleeing && c.npcHostile) {
+      // Letting a beaten opponent limp away is mercy — and a witness.
+      state = _recordSurvivorEscaped(c, state);
+    }
     final combat = c
         .addLog('You go your separate ways.')
         .copyWith(outcome: CombatOutcome.departed);
-    return CombatResult(combat, game);
+    return CombatResult(combat, state);
   }
 
   // --- internals ---
+
+  /// An opponent survived an exchange of fire and got away: the galaxy
+  /// hears about it. Spared rivals return meaner, in bigger ships.
+  static GameState _recordSurvivorEscaped(CombatState c, GameState game) {
+    var state = EventLedger.record(
+      game,
+      c.rivalId != null ? GameEventType.rivalSpared : GameEventType.enemyEscaped,
+      witnessed: true,
+      rivalId: c.rivalId,
+      detail: c.encounterType.name,
+    );
+    if (c.rivalId != null) {
+      state = RivalSystem.updateRival(
+          state,
+          c.rivalId!,
+          (r) => r.copyWith(
+              timesSpared: r.timesSpared + 1, grudge: r.grudge + 2));
+    }
+    return state;
+  }
 
   static CombatState _applyDamageToNpc(CombatState c, int dmg) {
     var remaining = dmg;
@@ -466,6 +526,25 @@ class Combat {
     }
 
     state = state.copyWith(commander: commander, credits: credits, ship: ship);
+
+    // Dead ships tell no tales: an unwitnessed kill stays off the record.
+    final eventType = switch (combat.encounterType) {
+      EncounterType.police => GameEventType.policeDestroyed,
+      EncounterType.pirate => GameEventType.pirateDestroyed,
+      EncounterType.trader => GameEventType.traderDestroyed,
+      EncounterType.monster => GameEventType.monsterDestroyed,
+    };
+    state = EventLedger.record(state, eventType,
+        witnessed: false, rivalId: combat.rivalId);
+    if (combat.rivalId != null) {
+      state = RivalSystem.updateRival(
+          state, combat.rivalId!, (r) => r.copyWith(alive: false));
+      state = EventLedger.record(state, GameEventType.rivalDefeated,
+          witnessed: false, rivalId: combat.rivalId);
+      combat = combat
+          .addLog('${combat.captainName} will trouble you no more.');
+    }
+
     combat = combat.copyWith(outcome: CombatOutcome.npcDestroyed);
     return CombatResult(combat, state);
   }
@@ -493,13 +572,16 @@ class Combat {
       hullStrength: fleaDef.hullStrength,
       tribbles: 0,
     );
-    final state = game.copyWith(
+    var state = game.copyWith(
       ship: flea,
       credits: game.credits + payout,
       escapePod: false,
       insurance: false,
       noClaim: 0,
     );
+    // Rescue beacons are public record — everyone hears you lost your ship.
+    state = EventLedger.record(state, GameEventType.playerShipLost,
+        witnessed: true, rivalId: combat.rivalId);
     combat = combat
         .addLog('Your escape pod jettisons. '
             '${payout > 0 ? "Insurance pays out $payout credits. " : ""}'

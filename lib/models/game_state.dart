@@ -3,6 +3,9 @@ import 'package:equatable/equatable.dart';
 
 import 'commander.dart';
 import 'enums.dart';
+import 'game_event.dart';
+import 'quest.dart';
+import 'rival.dart';
 import 'ship.dart';
 import 'solar_system.dart';
 
@@ -22,6 +25,10 @@ class GameState extends Equatable {
   final bool escapePod;
   final bool insurance;
   final int noClaim; // days since last insurance claim
+  final List<GameEvent> events; // the galaxy's ledger (capped)
+  final List<RivalCaptain> rivals;
+  final Quest? activeQuest;
+  final Quest? questOffer;
 
   const GameState({
     required this.commander,
@@ -39,6 +46,10 @@ class GameState extends Equatable {
     required this.escapePod,
     required this.insurance,
     required this.noClaim,
+    this.events = const [],
+    this.rivals = const [],
+    this.activeQuest,
+    this.questOffer,
   });
 
   SolarSystem get currentSystem => solarSystems[currentSystemIndex];
@@ -66,6 +77,10 @@ class GameState extends Equatable {
     bool? escapePod,
     bool? insurance,
     int? noClaim,
+    List<GameEvent>? events,
+    List<RivalCaptain>? rivals,
+    Object? activeQuest = _sentinel,
+    Object? questOffer = _sentinel,
   }) {
     return GameState(
       commander: commander ?? this.commander,
@@ -85,6 +100,12 @@ class GameState extends Equatable {
       escapePod: escapePod ?? this.escapePod,
       insurance: insurance ?? this.insurance,
       noClaim: noClaim ?? this.noClaim,
+      events: events ?? this.events,
+      rivals: rivals ?? this.rivals,
+      activeQuest:
+          activeQuest == _sentinel ? this.activeQuest : activeQuest as Quest?,
+      questOffer:
+          questOffer == _sentinel ? this.questOffer : questOffer as Quest?,
     );
   }
 
@@ -105,6 +126,10 @@ class GameState extends Equatable {
       'escapePod': escapePod,
       'insurance': insurance,
       'noClaim': noClaim,
+      'events': events.map((e) => e.toJson()).toList(),
+      'rivals': rivals.map((r) => r.toJson()).toList(),
+      'activeQuest': activeQuest?.toJson(),
+      'questOffer': questOffer?.toJson(),
     };
   }
 
@@ -133,6 +158,18 @@ class GameState extends Equatable {
       escapePod: json['escapePod'] as bool,
       insurance: json['insurance'] as bool,
       noClaim: json['noClaim'] as int,
+      events: (json['events'] as List? ?? const [])
+          .map((e) => GameEvent.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      rivals: (json['rivals'] as List? ?? const [])
+          .map((r) => RivalCaptain.fromJson(r as Map<String, dynamic>))
+          .toList(),
+      activeQuest: json['activeQuest'] == null
+          ? null
+          : Quest.fromJson(json['activeQuest'] as Map<String, dynamic>),
+      questOffer: json['questOffer'] == null
+          ? null
+          : Quest.fromJson(json['questOffer'] as Map<String, dynamic>),
     );
   }
 
@@ -150,6 +187,10 @@ class GameState extends Equatable {
         escapePod,
         insurance,
         noClaim,
+        events,
+        rivals,
+        activeQuest,
+        questOffer,
       ];
 }
 

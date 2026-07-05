@@ -2,10 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../engine/news.dart';
 import '../models/enums.dart';
 import '../models/game_state.dart';
+import '../models/quest.dart';
 import '../models/ship.dart';
-import '../models/solar_system.dart';
 import '../providers/game_provider.dart';
 
 class HubScreen extends ConsumerWidget {
@@ -49,6 +50,7 @@ class HubScreen extends ConsumerWidget {
                 const SizedBox(height: 16),
                 _StatusBar(game: game),
                 const SizedBox(height: 24),
+                const _QuestPanel(),
                 _NavigationGrid(game: game),
                 const SizedBox(height: 24),
                 _NewsPanel(game: game),
@@ -556,15 +558,22 @@ class _NewsPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
-    final system = game.currentSystem;
 
-    final headlines = _generateHeadlines(system, game);
+    final headlines = [
+      ...NewsEngine.headlines(game),
+      if (game.debt > 0)
+        'FINANCE: Current debt standing at ${game.debt} cr. '
+            'Daily interest accruing at 1%.',
+      'Day ${game.days}: Commander ${game.commander.name} — '
+          '${game.commander.reputation.displayName} — '
+          '${game.commander.policeRecord.displayName}',
+    ];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'SYSTEM BULLETIN',
+          'GNN — GALACTIC NEWS NETWORK',
           style: TextStyle(
             color: cs.primary.withOpacity(0.6),
             fontSize: 10,
@@ -612,36 +621,135 @@ class _NewsPanel extends StatelessWidget {
     );
   }
 
-  List<String> _generateHeadlines(SolarSystem system, GameState game) {
-    final lines = <String>[];
+}
 
-    switch (system.status) {
-      case SystemStatus.war:
-        lines.add('CONFLICT: ${system.name} armed forces mobilize on all fronts. Weapons prices at all-time high.');
-      case SystemStatus.plague:
-        lines.add('HEALTH ALERT: Quarantine protocols in effect across ${system.name}. Medicine shipments urgently needed.');
-      case SystemStatus.drought:
-        lines.add('WATER SCARCITY: ${system.name} enters third month of severe water shortage. Prices soaring.');
-      case SystemStatus.boredom:
-        lines.add('CULTURAL CRISIS: ${system.name} citizens demand entertainment. Games and narcotics imports booming.');
-      case SystemStatus.cold:
-        lines.add('COLD SNAP: Unprecedented cold front hits ${system.name}. Fur merchants report record profits.');
-      case SystemStatus.cropFailure:
-        lines.add('FOOD SHORTAGE: Crop blight devastates ${system.name} agricultural sector. Food imports critical.');
-      case SystemStatus.lackOfWorkers:
-        lines.add('LABOR CRISIS: ${system.name} suffers acute worker shortages. Machine and robot imports encouraged.');
-      case SystemStatus.uneventful:
-        lines.add('${system.name} reports stable conditions. Standard trade routes operating normally.');
+/// Quest surface: shows the outcome of a just-resolved quest, a pending
+/// offer (accept/decline), or progress on the active job.
+class _QuestPanel extends ConsumerWidget {
+  const _QuestPanel();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final game = ref.watch(gameProvider);
+    final resolved = ref.watch(resolvedQuestProvider);
+    if (game == null) return const SizedBox.shrink();
+
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+    final children = <Widget>[];
+
+    if (resolved != null) {
+      final success = resolved.status == QuestStatus.completed;
+      children.add(Card(
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                success
+                    ? 'CONTRACT FULFILLED — ${resolved.title}'
+                    : 'CONTRACT FAILED — ${resolved.title}',
+                style: tt.titleSmall?.copyWith(
+                    color: success ? cs.primary : cs.error),
+              ),
+              const SizedBox(height: 6),
+              Text(success ? resolved.successText : resolved.failureText,
+                  style: tt.bodyMedium),
+              if (success) ...[
+                const SizedBox(height: 6),
+                Text('+${resolved.rewardCredits} cr',
+                    style: tt.labelLarge),
+              ],
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: () =>
+                      ref.read(resolvedQuestProvider.notifier).state = null,
+                  child: const Text('DISMISS'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ));
+      children.add(const SizedBox(height: 16));
     }
 
-    if (game.debt > 0) {
-      lines.add(
-          'FINANCE: Current debt standing at ${game.debt} cr. Daily interest accruing at 1%.');
+    final offer = game.questOffer;
+    if (offer != null) {
+      children.add(Card(
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(offer.title,
+                  style: tt.titleSmall?.copyWith(color: cs.secondary)),
+              const SizedBox(height: 6),
+              Text(offer.hook, style: tt.bodyMedium),
+              const SizedBox(height: 8),
+              Text(
+                'Deliver ${offer.qty} × ${offer.good.displayName} to '
+                '${game.solarSystems[offer.targetSystemIndex].name} '
+                'by day ${offer.deadlineDay} — ${offer.rewardCredits} cr',
+                style: tt.labelMedium,
+              ),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () =>
+                        ref.read(gameProvider.notifier).declineQuest(),
+                    child: const Text('DECLINE'),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: () =>
+                        ref.read(gameProvider.notifier).acceptQuest(),
+                    child: const Text('ACCEPT'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ));
+      children.add(const SizedBox(height: 16));
     }
 
-    lines.add(
-        'Day ${game.days}: Commander ${game.commander.name} — ${game.commander.reputation.displayName} — ${game.commander.policeRecord.displayName}');
+    final active = game.activeQuest;
+    if (active != null) {
+      final carrying = game.ship.cargo[active.good] ?? 0;
+      children.add(Card(
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('ACTIVE — ${active.title}',
+                  style: tt.titleSmall?.copyWith(color: cs.primary)),
+              const SizedBox(height: 6),
+              Text(
+                'Deliver ${active.qty} × ${active.good.displayName} to '
+                '${game.solarSystems[active.targetSystemIndex].name} '
+                'by day ${active.deadlineDay} '
+                '(carrying $carrying/${active.qty}) — '
+                '${active.rewardCredits} cr on completion',
+                style: tt.bodyMedium,
+              ),
+            ],
+          ),
+        ),
+      ));
+      children.add(const SizedBox(height: 16));
+    }
 
-    return lines;
+    if (children.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: children,
+    );
   }
 }

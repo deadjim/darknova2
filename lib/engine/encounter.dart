@@ -11,11 +11,15 @@ class EncounterResult {
   final EncounterType type;
   final NpcShip npcShip;
   final bool npcFleeing;
+  final String? rivalId; // set when this encounter is a named rival
+  final String? captainName;
 
   const EncounterResult({
     required this.type,
     required this.npcShip,
     required this.npcFleeing,
+    this.rivalId,
+    this.captainName,
   });
 }
 
@@ -131,15 +135,20 @@ class Encounter {
     return chance.clamp(0, 90);
   }
 
-  /// Generate an NPC ship for the encounter.
+  /// Generate an NPC ship for the encounter. Pass [forceShipType] (and
+  /// rival identity) to promote the encounter into a named-rival fight.
   static EncounterResult generateEncounter(
     EncounterType type,
     SolarSystem system,
-    DifficultyLevel difficulty,
-  ) {
+    DifficultyLevel difficulty, {
+    ShipType? forceShipType,
+    String? rivalId,
+    String? captainName,
+  }) {
     final rng = Random();
     final govDef = GovernmentDef.forType(system.government);
-    final shipType = _selectNpcShipType(type, govDef, system.techLevel, rng);
+    final shipType = forceShipType ??
+        _selectNpcShipType(type, govDef, system.techLevel, rng);
     final def = ShipTypeDef.forType(shipType);
 
     final weapons = _generateWeapons(def, system.techLevel, rng);
@@ -157,11 +166,18 @@ class Encounter {
       credits: credits,
     );
 
-    // Traders sometimes flee immediately.
-    final fleeing =
-        type == EncounterType.trader && rng.nextInt(100) < 40;
+    // Traders sometimes flee immediately. Rivals never open by fleeing.
+    final fleeing = rivalId == null &&
+        type == EncounterType.trader &&
+        rng.nextInt(100) < 40;
 
-    return EncounterResult(type: type, npcShip: npc, npcFleeing: fleeing);
+    return EncounterResult(
+      type: type,
+      npcShip: npc,
+      npcFleeing: fleeing,
+      rivalId: rivalId,
+      captainName: captainName,
+    );
   }
 
   static ShipType _selectNpcShipType(

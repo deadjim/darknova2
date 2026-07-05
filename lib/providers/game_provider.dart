@@ -8,9 +8,13 @@ import '../engine/combat.dart';
 import '../engine/economy.dart';
 import '../engine/encounter.dart';
 import '../engine/game_engine.dart';
+import '../engine/news.dart';
+import '../engine/quests.dart';
+import '../engine/rivals.dart';
 import '../engine/travel.dart';
 import '../models/enums.dart';
 import '../models/game_state.dart';
+import '../models/quest.dart';
 import '../models/ship.dart';
 import '../models/solar_system.dart';
 
@@ -83,6 +87,8 @@ class GameStateNotifier extends StateNotifier<GameState?> {
   // Travel
   // ---------------------------------------------------------------------------
 
+  final Random _rng = Random();
+
   /// Warp to a system. Returns true if an encounter interrupts the trip
   /// (the caller should route to the encounter screen).
   bool warpTo(int targetIndex) {
@@ -90,13 +96,44 @@ class GameStateNotifier extends StateNotifier<GameState?> {
     if (current == null) return false;
     final couldWarp = Travel.canReach(current.currentSystem,
         current.solarSystems[targetIndex], current.ship);
-    state = GameEngine.warpTo(current, targetIndex);
+    var next = GameEngine.warpTo(current, targetIndex);
+
+    if (couldWarp) {
+      // Quest lifecycle: completion/deadline first, then new triggers.
+      final (afterQuests, resolved) = QuestSystem.checkProgress(next);
+      next = QuestSystem.evaluateTriggers(afterQuests, _rng);
+      _ref.read(resolvedQuestProvider.notifier).state = resolved;
+    }
+
+    state = next;
     saveGame();
     if (!couldWarp) return false;
-    final encounter = GameEngine.rollEncounter(state!);
+
+    final encounter = GameEngine.rollEncounter(state!, _rng);
     if (encounter == null) return false;
+    if (encounter.rivalId != null) {
+      state = RivalSystem.markMet(state!, encounter.rivalId!);
+    }
     _ref.read(encounterProvider.notifier).begin(encounter, state!.ship);
     return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Quests
+  // ---------------------------------------------------------------------------
+
+  void acceptQuest() {
+    final current = state;
+    if (current == null || current.questOffer == null) return;
+    state = QuestSystem.accept(current);
+    saveGame();
+  }
+
+  void declineQuest() {
+    final current = state;
+    if (current == null || current.questOffer == null) return;
+    state = QuestSystem.decline(current);
+    saveGame();
   }
 
   void selectWarpTarget(int? index) {
@@ -374,6 +411,16 @@ final galaxySystemsProvider = Provider<List<SolarSystem>>((ref) {
   final game = ref.watch(gameProvider);
   return game?.solarSystems ?? [];
 });
+
+/// GNN headlines derived from public game state.
+final newsProvider = Provider<List<String>>((ref) {
+  final game = ref.watch(gameProvider);
+  return game == null ? const [] : NewsEngine.headlines(game);
+});
+
+/// The quest that resolved (completed/failed) on the most recent warp,
+/// so the hub can show its outcome once.
+final resolvedQuestProvider = StateProvider<Quest?>((ref) => null);
 
 /// Whether there is a saved game.
 final hasSaveProvider = FutureProvider<bool>((ref) async {

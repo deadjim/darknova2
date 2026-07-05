@@ -10,6 +10,7 @@ import '../models/solar_system.dart';
 import 'economy.dart';
 import 'encounter.dart';
 import 'galaxy_generator.dart';
+import 'rivals.dart';
 import 'travel.dart';
 
 class GameEngine {
@@ -60,6 +61,7 @@ class GameEngine {
       escapePod: false,
       insurance: false,
       noClaim: 0,
+      rivals: RivalSystem.generate(seed),
     );
   }
 
@@ -69,11 +71,27 @@ class GameEngine {
   }
 
   /// Roll for an encounter at the current system (call after a warp).
-  /// Returns null when the trip is uneventful.
-  static EncounterResult? rollEncounter(GameState state) {
+  /// Returns null when the trip is uneventful. Pirate encounters are
+  /// sometimes promoted into named-rival encounters.
+  static EncounterResult? rollEncounter(GameState state, [Random? random]) {
+    final rng = random ?? Random();
     final type = Encounter.rollEncounter(
         state.currentSystem, state.commander, state.difficulty);
     if (type == null) return null;
+
+    if (type == EncounterType.pirate) {
+      final rival = RivalSystem.pickRival(state, rng);
+      if (rival != null) {
+        return Encounter.generateEncounter(
+          type,
+          state.currentSystem,
+          state.difficulty,
+          forceShipType: RivalSystem.escalatedHull(rival),
+          rivalId: rival.id,
+          captainName: rival.name,
+        );
+      }
+    }
     return Encounter.generateEncounter(
         type, state.currentSystem, state.difficulty);
   }

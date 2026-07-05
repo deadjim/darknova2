@@ -48,8 +48,9 @@ class EncounterScreen extends ConsumerWidget {
                 ),
                 const SizedBox(height: 8),
                 _ShipStatusCard(
-                  label:
-                      '${_faction(combat.encounterType)} — ${combat.npcDef.displayName}',
+                  label: combat.captainName != null
+                      ? '${combat.captainName!.toUpperCase()} — ${combat.npcDef.displayName}'
+                      : '${_faction(combat.encounterType)} — ${combat.npcDef.displayName}',
                   hull: combat.npcHull.clamp(0, combat.npcMaxHull),
                   maxHull: combat.npcMaxHull,
                   shield: combat.npcShieldHp,
@@ -72,6 +73,7 @@ class EncounterScreen extends ConsumerWidget {
   }
 
   String _title(CombatState c) {
+    if (c.captainName != null) return 'RIVAL: ${c.captainName!.toUpperCase()}';
     switch (c.encounterType) {
       case EncounterType.police:
         return 'POLICE INSPECTION';
