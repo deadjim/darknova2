@@ -1,4 +1,6 @@
 // Pure Dart — no Flutter imports
+import 'dart:math';
+
 import '../models/enums.dart';
 import '../models/game_event.dart';
 import '../models/game_state.dart';
@@ -17,8 +19,36 @@ class NewsEngine {
 
   static const int maxHeadlines = 5;
 
+  /// Game-balance note: the wire must be a *lead generator*, not a market
+  /// scanner. If it reliably listed every nearby crisis, it would replace
+  /// exploration as the way to find good trades. So crisis coverage is:
+  ///   * capped at [maxCrisisHeadlines] per day,
+  ///   * probabilistic, with odds that fall off with distance
+  ///     (a plague two jumps away usually makes the feed; one across the
+  ///     galaxy rarely does),
+  ///   * deterministic per (galaxySeed, day), so the feed doesn't reroll
+  ///     on every widget rebuild — it changes when the day does.
+  /// Filler headlines pad the feed so the player can't infer "no crisis
+  /// line = no crisis nearby".
+  static const int maxCrisisHeadlines = 2;
+
+  static const List<String> _filler = [
+    'GALACTIC SENATE DEBATES FREIGHT TARIFF REFORM; NOTHING DECIDED',
+    'CELEBRITY GNAT RACER ANNOUNCES RETIREMENT. AGAIN.',
+    'STUDY: WORMHOLE TRANSIT "PROBABLY SAFE", SCIENTISTS SHRUG',
+    'FUEL PRICES STEADY AS REFINERS DENY COLLUSION',
+    'MISS GALAXY PAGEANT MARRED BY TRIBBLE INCIDENT',
+    'INSURERS WARN: ESCAPE POD SALES OUTPACING COMMON SENSE',
+    'DOCKWORKERS UNION THREATENS THIRD STRIKE THIS QUARTER',
+    'ARCHAEOLOGISTS FIND ANCIENT VENDING MACHINE; STILL STOCKED',
+    'POLL: 6 IN 10 SPACERS ADMIT NAPPING THROUGH WARP',
+    'FASHION WIRE: MAGNETIC BOOTS ARE BACK',
+  ];
+
   static List<String> headlines(GameState state) {
     final items = <String>[];
+    // Stable within a day, fresh each day.
+    final rng = Random(state.galaxySeed ^ (state.days * 0x9E3779B9));
 
     // Recent public events involving the player (newest first).
     final public = state.events
@@ -31,21 +61,36 @@ class NewsEngine {
       if (items.length >= 3) break;
     }
 
-    // Galaxy status wire: crises move markets. Local news first —
-    // the feed covers the systems nearest the player's position.
+    // Galaxy status wire: a sample of nearby crises, not a scan.
     final here = state.currentSystem;
-    final byDistance = List.of(state.solarSystems)
+    final inCrisis = state.solarSystems
+        .where((s) =>
+            s.status != SystemStatus.uneventful && s != here)
+        .toList()
       ..sort((a, b) => Travel.distance(here, a)
           .compareTo(Travel.distance(here, b)));
-    for (final system in byDistance) {
-      if (items.length >= maxHeadlines) break;
+    var crisisCount = 0;
+    for (final system in inCrisis) {
+      if (crisisCount >= maxCrisisHeadlines ||
+          items.length >= maxHeadlines) {
+        break;
+      }
+      final dist = Travel.distance(here, system);
+      // ~75% coverage next door, fading to a floor of 10% far away.
+      final coverage = max(10, 75 - (dist * 1.5).round());
+      if (rng.nextInt(100) >= coverage) continue;
       final line = _statusHeadline(system.name, system.status);
-      if (line != null) items.add(line);
+      if (line != null) {
+        items.add(line);
+        crisisCount++;
+      }
     }
 
-    if (items.isEmpty) {
-      items.add('GNN WIRE: A quiet week across the sector. '
-          'Analysts are suspicious.');
+    // Pad with filler so a short feed doesn't leak information.
+    final filler = List<String>.from(_filler)..shuffle(rng);
+    for (final line in filler) {
+      if (items.length >= maxHeadlines) break;
+      items.add(line);
     }
     return items.take(maxHeadlines).toList();
   }

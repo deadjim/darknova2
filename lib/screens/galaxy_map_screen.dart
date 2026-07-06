@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../engine/travel.dart';
 import '../models/enums.dart';
 import '../models/game_state.dart';
 import '../models/solar_system.dart';
@@ -20,11 +21,42 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen> {
   int? _selectedIndex;
   final TransformationController _transformController =
       TransformationController();
+  Size _canvasSize = Size.zero;
+  bool _autoZoomed = false;
+
+  static const double _maxZoom = 5.0;
 
   @override
   void dispose() {
     _transformController.dispose();
     super.dispose();
+  }
+
+  /// Zoom in on the current system so the fuel range fills most of the
+  /// viewport — the "what can I reach right now" view.
+  void _focusRange(GameState game) {
+    if (_canvasSize == Size.zero) return;
+    final scaleX = _canvasSize.width / GalaxyPainter.mapW;
+    final scaleY = _canvasSize.height / GalaxyPainter.mapH;
+    final sys = game.solarSystems[game.currentSystemIndex];
+    final px = sys.x * scaleX;
+    final py = sys.y * scaleY;
+
+    final rangePc = Travel.maxRange(game.ship);
+    // Diameter of the range circle in canvas pixels (use the larger axis).
+    final diameterPx = 2 * rangePc * max(scaleX, scaleY);
+    final shortest = min(_canvasSize.width, _canvasSize.height);
+    final zoom =
+        (shortest / (diameterPx * 1.25)).clamp(1.0, _maxZoom).toDouble();
+
+    _transformController.value = Matrix4.identity()
+      ..translate(_canvasSize.width / 2, _canvasSize.height / 2)
+      ..scale(zoom)
+      ..translate(-px, -py);
+  }
+
+  void _showFullGalaxy() {
+    _transformController.value = Matrix4.identity();
   }
 
   @override
@@ -51,7 +83,8 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen> {
             padding: const EdgeInsets.only(right: 16),
             child: Center(
               child: Text(
-                'FUEL: ${game.ship.fuel}/${game.ship.maxFuel}',
+                'FUEL ${game.ship.fuel}/${game.ship.maxFuel} · '
+                'RANGE ${Travel.maxRange(game.ship).toStringAsFixed(0)} pc',
                 style: tt.labelMedium?.copyWith(color: cs.secondary),
               ),
             ),
@@ -61,28 +94,64 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen> {
       body: Column(
         children: [
           Expanded(
-            child: InteractiveViewer(
-              transformationController: _transformController,
-              minScale: 0.5,
-              maxScale: 4.0,
-              child: GestureDetector(
-                onTapUp: (details) =>
-                    _handleTap(details, game, reachable, context),
-                child: CustomPaint(
-                  size: const Size(double.infinity, double.infinity),
-                  painter: GalaxyPainter(
-                    systems: game.solarSystems,
-                    currentIndex: game.currentSystemIndex,
-                    selectedIndex: _selectedIndex,
-                    reachableIndices: reachable,
-                    cs: cs,
-                  ),
-                  child: const SizedBox(
-                    width: double.infinity,
-                    height: double.infinity,
-                  ),
-                ),
-              ),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                _canvasSize =
+                    Size(constraints.maxWidth, constraints.maxHeight);
+                if (!_autoZoomed) {
+                  _autoZoomed = true;
+                  WidgetsBinding.instance
+                      .addPostFrameCallback((_) => _focusRange(game));
+                }
+                final wormholeTarget = _wormholeTarget(game);
+                return Stack(
+                  children: [
+                    InteractiveViewer(
+                      transformationController: _transformController,
+                      minScale: 1.0,
+                      maxScale: _maxZoom,
+                      child: GestureDetector(
+                        onTapUp: (details) => _handleTap(details, game),
+                        child: CustomPaint(
+                          size: _canvasSize,
+                          painter: GalaxyPainter(
+                            systems: game.solarSystems,
+                            currentIndex: game.currentSystemIndex,
+                            selectedIndex: _selectedIndex,
+                            reachableIndices: reachable,
+                            rangeParsecs: Travel.maxRange(game.ship),
+                            wormholeTargetIndex: wormholeTarget,
+                            cs: cs,
+                          ),
+                          child: SizedBox(
+                            width: _canvasSize.width,
+                            height: _canvasSize.height,
+                          ),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      right: 12,
+                      top: 12,
+                      child: Column(
+                        children: [
+                          IconButton.filledTonal(
+                            icon: const Icon(Icons.my_location, size: 20),
+                            tooltip: 'Focus warp range',
+                            onPressed: () => _focusRange(game),
+                          ),
+                          const SizedBox(height: 8),
+                          IconButton.filledTonal(
+                            icon: const Icon(Icons.zoom_out_map, size: 20),
+                            tooltip: 'Full galaxy',
+                            onPressed: _showFullGalaxy,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
           ),
           if (_selectedIndex != null)
@@ -105,36 +174,36 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen> {
     );
   }
 
-  void _handleTap(
-    TapUpDetails details,
-    GameState game,
-    List<int> reachable,
-    BuildContext context,
-  ) {
-    final size = context.size ?? Size.zero;
-    const mapW = 150.0;
-    const mapH = 110.0;
-    final scaleX = size.width / mapW;
-    final scaleY = size.height / mapH;
+  int? _wormholeTarget(GameState game) {
+    final here = game.currentSystem;
+    if (here.specialEvent != null && here.specialEvent! >= 1000) {
+      final idx = here.specialEvent! - 1000;
+      if (idx < game.solarSystems.length) return idx;
+    }
+    return null;
+  }
 
-    // Account for InteractiveViewer transform.
-    final transform = _transformController.value;
-    final local = MatrixUtils.transformPoint(
-      Matrix4.inverted(transform),
-      details.localPosition,
-    );
+  void _handleTap(TapUpDetails details, GameState game) {
+    if (_canvasSize == Size.zero) return;
+    final scaleX = _canvasSize.width / GalaxyPainter.mapW;
+    final scaleY = _canvasSize.height / GalaxyPainter.mapH;
 
-    final systemX = local.dx / scaleX;
-    final systemY = local.dy / scaleY;
+    // The GestureDetector sits inside the InteractiveViewer, so
+    // localPosition is already in child (canvas) coordinates.
+    final local = details.localPosition;
 
+    // Pick the nearest system within a finger-friendly radius, measured
+    // in canvas pixels (which grow with zoom — zooming in makes targets
+    // physically bigger on screen).
+    const hitRadiusPx = 26.0;
     int? closest;
     double closestDist = double.infinity;
     for (int i = 0; i < game.solarSystems.length; i++) {
       final sys = game.solarSystems[i];
-      final dx = (sys.x.toDouble() - systemX);
-      final dy = (sys.y.toDouble() - systemY);
+      final dx = sys.x * scaleX - local.dx;
+      final dy = sys.y * scaleY - local.dy;
       final d = sqrt(dx * dx + dy * dy);
-      if (d < closestDist && d < 4.0) {
+      if (d < closestDist && d < hitRadiusPx) {
         closestDist = d;
         closest = i;
       }
@@ -149,10 +218,15 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen> {
 }
 
 class GalaxyPainter extends CustomPainter {
+  static const double mapW = 150.0;
+  static const double mapH = 110.0;
+
   final List<SolarSystem> systems;
   final int currentIndex;
   final int? selectedIndex;
   final List<int> reachableIndices;
+  final double rangeParsecs;
+  final int? wormholeTargetIndex;
   final ColorScheme cs;
 
   const GalaxyPainter({
@@ -160,13 +234,13 @@ class GalaxyPainter extends CustomPainter {
     required this.currentIndex,
     required this.selectedIndex,
     required this.reachableIndices,
+    required this.rangeParsecs,
+    required this.wormholeTargetIndex,
     required this.cs,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    const mapW = 150.0;
-    const mapH = 110.0;
     final scaleX = size.width / mapW;
     final scaleY = size.height / mapH;
 
@@ -200,36 +274,30 @@ class GalaxyPainter extends CustomPainter {
       }
     }
 
-    // Draw reachable range circle around current system.
+    // True fuel-range ring around the current system. The map's x/y
+    // scales differ, so a circle in parsecs is an ellipse on screen.
     final currentSys = systems[currentIndex];
     final currentPos = Offset(
         currentSys.x * scaleX, currentSys.y * scaleY);
 
-    // Draw range overlay (approx circle showing fuel reach).
-    // Use the farthest reachable system as radius hint.
-    if (reachableIndices.isNotEmpty) {
-      double maxDist = 0;
-      for (final idx in reachableIndices) {
-        final sys = systems[idx];
-        final dx = (sys.x - currentSys.x) * scaleX;
-        final dy = (sys.y - currentSys.y) * scaleY;
-        final d = sqrt(dx * dx + dy * dy);
-        if (d > maxDist) maxDist = d;
-      }
-      canvas.drawCircle(
-        currentPos,
-        maxDist,
+    if (rangeParsecs > 0) {
+      final rangeRect = Rect.fromCenter(
+        center: currentPos,
+        width: 2 * rangeParsecs * scaleX,
+        height: 2 * rangeParsecs * scaleY,
+      );
+      canvas.drawOval(
+        rangeRect,
         Paint()
-          ..color = cs.primary.withOpacity(0.05)
+          ..color = cs.primary.withOpacity(0.06)
           ..style = PaintingStyle.fill,
       );
-      canvas.drawCircle(
-        currentPos,
-        maxDist,
+      canvas.drawOval(
+        rangeRect,
         Paint()
-          ..color = cs.primary.withOpacity(0.15)
+          ..color = cs.primary.withOpacity(0.35)
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 0.8,
+          ..strokeWidth = 1.0,
       );
     }
 
@@ -240,10 +308,22 @@ class GalaxyPainter extends CustomPainter {
       final isCurrentSystem = i == currentIndex;
       final isSelected = i == selectedIndex;
       final isReachable = reachableIndices.contains(i);
+      final isWormholeExit = i == wormholeTargetIndex;
       final isVisited = sys.visited;
 
       final baseColor = _systemColor(sys.government, cs);
       final radius = 1.5 + (sys.size - 1) * 0.4;
+
+      // Wormhole exit: free transit — mark it before anything else so the
+      // purple ring shows under selection highlights too.
+      if (isWormholeExit && !isCurrentSystem) {
+        canvas.drawCircle(
+            pos, radius + 5,
+            Paint()
+              ..color = const Color(0xFF7c3aed).withOpacity(0.55)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.4);
+      }
 
       if (isCurrentSystem) {
         // Current system: bright with pulse rings.
@@ -295,8 +375,14 @@ class GalaxyPainter extends CustomPainter {
             Paint()..color = baseColor.withOpacity(0.3));
       }
 
-      // System name for visited or selected/current/reachable.
-      if (isCurrentSystem || isSelected || (isVisited && sys.size >= 3)) {
+      // Names: current, selected, anything in warp range, wormhole exit,
+      // and larger visited systems. In-range names are what lets you pick
+      // a destination at a glance.
+      if (isCurrentSystem ||
+          isSelected ||
+          isReachable ||
+          isWormholeExit ||
+          (isVisited && sys.size >= 3)) {
         final tp = TextPainter(
           text: TextSpan(
             text: sys.name,
@@ -305,8 +391,12 @@ class GalaxyPainter extends CustomPainter {
                   ? cs.primary
                   : isSelected
                       ? cs.secondary
-                      : cs.onSurface.withOpacity(0.5),
-              fontSize: 7,
+                      : isWormholeExit
+                          ? const Color(0xFFa78bfa)
+                          : isReachable
+                              ? const Color(0xFF4fc3f7).withOpacity(0.9)
+                              : cs.onSurface.withOpacity(0.5),
+              fontSize: isReachable || isWormholeExit ? 6 : 7,
               fontWeight: (isCurrentSystem || isSelected)
                   ? FontWeight.w700
                   : FontWeight.w400,
@@ -404,7 +494,9 @@ class GalaxyPainter extends CustomPainter {
   bool shouldRepaint(GalaxyPainter old) =>
       old.currentIndex != currentIndex ||
       old.selectedIndex != selectedIndex ||
-      old.reachableIndices != reachableIndices;
+      old.reachableIndices != reachableIndices ||
+      old.rangeParsecs != rangeParsecs ||
+      old.wormholeTargetIndex != wormholeTargetIndex;
 }
 
 class _SystemInfoCard extends StatelessWidget {
@@ -448,6 +540,32 @@ class _SystemInfoCard extends StatelessWidget {
                       style: tt.titleLarge?.copyWith(
                           color: cs.primary, letterSpacing: 2)),
                   const SizedBox(height: 4),
+                  Builder(builder: (context) {
+                    final dist = Travel.distance(
+                        game.currentSystem, system);
+                    final isWormhole = Travel.isWormholePartner(
+                        game.currentSystem, selectedIndex);
+                    final cost = Travel.fuelCostIndexed(
+                        game.solarSystems,
+                        game.currentSystemIndex,
+                        selectedIndex,
+                        game.ship);
+                    final affordable = cost <= game.ship.fuel;
+                    return Text(
+                      isWormhole
+                          ? '${dist.toStringAsFixed(1)} pc · WORMHOLE — FREE TRANSIT'
+                          : '${dist.toStringAsFixed(1)} pc · $cost FUEL',
+                      style: tt.bodySmall?.copyWith(
+                        color: isWormhole
+                            ? const Color(0xFFa78bfa)
+                            : affordable
+                                ? cs.secondary
+                                : cs.error,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    );
+                  }),
+                  const SizedBox(height: 2),
                   Text(
                     '${system.government.displayName} · Tech ${system.techLevel} · ${system.status.displayName}',
                     style: tt.bodySmall,

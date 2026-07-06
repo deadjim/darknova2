@@ -65,7 +65,10 @@ class _TradeScreenState extends ConsumerState<TradeScreen>
       ),
       body: Column(
         children: [
-          _CargoBar(game: game),
+          _CargoBar(
+            game: game,
+            onSellAll: game.ship.totalCargoUsed > 0 ? _sellAll : null,
+          ),
           Expanded(
             child: TabBarView(
               controller: _tabController,
@@ -106,6 +109,19 @@ class _TradeScreenState extends ConsumerState<TradeScreen>
     }
   }
 
+  void _sellAll() {
+    final gained = ref.read(gameProvider.notifier).sellAllCargo();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(gained > 0
+            ? 'Sold all sellable cargo for $gained cr.'
+            : 'Nothing here will buy your cargo.'),
+        backgroundColor:
+            gained > 0 ? null : Theme.of(context).colorScheme.error,
+      ),
+    );
+  }
+
   void _sellGood(GameState game, TradeGood good, int qty) {
     final success = ref.read(gameProvider.notifier).sellGood(good, qty);
     if (!success) {
@@ -136,7 +152,8 @@ class _TradeScreenState extends ConsumerState<TradeScreen>
 
 class _CargoBar extends StatelessWidget {
   final GameState game;
-  const _CargoBar({required this.game});
+  final VoidCallback? onSellAll;
+  const _CargoBar({required this.game, this.onSellAll});
 
   @override
   Widget build(BuildContext context) {
@@ -182,6 +199,20 @@ class _CargoBar extends StatelessWidget {
             style: tt.labelMedium?.copyWith(
                 color: cs.secondary, fontWeight: FontWeight.w700),
           ),
+          if (onSellAll != null) ...[
+            const SizedBox(width: 12),
+            OutlinedButton(
+              onPressed: onSellAll,
+              style: OutlinedButton.styleFrom(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                minimumSize: Size.zero,
+                textStyle:
+                    const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+              ),
+              child: const Text('SELL ALL'),
+            ),
+          ],
         ],
       ),
     );

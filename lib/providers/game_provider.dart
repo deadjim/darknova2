@@ -95,8 +95,8 @@ class GameStateNotifier extends StateNotifier<GameState?> {
   String warpTo(int targetIndex) {
     final current = state;
     if (current == null) return '/game';
-    final couldWarp = Travel.canReach(current.currentSystem,
-        current.solarSystems[targetIndex], current.ship);
+    final couldWarp = Travel.canReachIndexed(current.solarSystems,
+        current.currentSystemIndex, targetIndex, current.ship);
     var next = GameEngine.warpTo(current, targetIndex);
 
     if (couldWarp) {
@@ -160,6 +160,19 @@ class GameStateNotifier extends StateNotifier<GameState?> {
     state = next;
     saveGame();
     return true;
+  }
+
+  /// Sell everything sellable in the hold. Returns credits gained.
+  int sellAllCargo() {
+    final current = state;
+    if (current == null) return 0;
+    final (next, gained) = GameEngine.sellAllCargo(current);
+    if (gained == 0 && next.ship.cargo.length == current.ship.cargo.length) {
+      return 0;
+    }
+    state = next;
+    saveGame();
+    return gained;
   }
 
   bool sellGood(TradeGood good, int quantity) {

@@ -369,6 +369,18 @@ class GameEngine {
         insurance: true, credits: state.credits - price);
   }
 
+  /// Sell every unit of every sellable good in the hold at current
+  /// prices. Returns the new state and the credits gained (0 if nothing
+  /// could be sold — untradeable goods stay aboard).
+  static (GameState, int) sellAllCargo(GameState state) {
+    var next = state;
+    for (final entry in Map<TradeGood, int>.from(state.ship.cargo).entries) {
+      final sold = sellGood(next, entry.key, entry.value);
+      if (sold != null) next = sold;
+    }
+    return (next, next.credits - state.credits);
+  }
+
   /// Refresh trade prices for the current system (call after visiting).
   static GameState refreshPrices(GameState state) {
     final system = state.currentSystem;

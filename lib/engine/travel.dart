@@ -36,6 +36,27 @@ class Travel {
     return ship.fuel >= fuelCost(from, to, ship);
   }
 
+  /// Is [targetIndex] the wormhole partner of [from]? Wormhole transit is
+  /// free regardless of distance or fuel.
+  static bool isWormholePartner(SolarSystem from, int targetIndex) {
+    return from.specialEvent != null &&
+        from.specialEvent! >= 1000 &&
+        from.specialEvent! - 1000 == targetIndex;
+  }
+
+  /// Fuel cost between two systems by index — wormhole-aware.
+  static int fuelCostIndexed(
+      List<SolarSystem> all, int fromIndex, int toIndex, Ship ship) {
+    if (isWormholePartner(all[fromIndex], toIndex)) return 0;
+    return fuelCost(all[fromIndex], all[toIndex], ship);
+  }
+
+  /// Reachability by index — wormhole-aware.
+  static bool canReachIndexed(
+      List<SolarSystem> all, int fromIndex, int toIndex, Ship ship) {
+    return ship.fuel >= fuelCostIndexed(all, fromIndex, toIndex, ship);
+  }
+
   /// All systems reachable from the given system with current fuel.
   static List<SolarSystem> inRange(
       SolarSystem from, List<SolarSystem> all, Ship ship) {
@@ -44,13 +65,14 @@ class Travel {
         .toList();
   }
 
-  /// Indices of reachable systems.
+  /// Indices of reachable systems, including the wormhole partner (free).
   static List<int> inRangeIndices(
       int fromIndex, List<SolarSystem> all, Ship ship) {
     final from = all[fromIndex];
     final result = <int>[];
     for (int i = 0; i < all.length; i++) {
-      if (i != fromIndex && canReach(from, all[i], ship)) {
+      if (i == fromIndex) continue;
+      if (isWormholePartner(from, i) || canReach(from, all[i], ship)) {
         result.add(i);
       }
     }
@@ -67,22 +89,19 @@ class Travel {
   ///   - encounter rolled (stored in state via warpTargetIndex clearing)
   static GameState warpTo(GameState state, int targetIndex) {
     final from = state.currentSystem;
-    final to = state.solarSystems[targetIndex];
     final ship = state.ship;
-    final cost = fuelCost(from, to, ship);
+    // Wormhole transit is free — check it before the fuel gate, or a
+    // partner beyond fuel range would be wrongly unreachable.
+    final cost =
+        fuelCostIndexed(state.solarSystems, state.currentSystemIndex,
+            targetIndex, ship);
 
     if (ship.fuel < cost) {
       // Not enough fuel — return unchanged.
       return state;
     }
 
-    // Check for wormhole jump.
-    final isWormhole = from.specialEvent != null &&
-        from.specialEvent! >= 1000 &&
-        (from.specialEvent! - 1000) == targetIndex;
-
-    final newFuel = isWormhole ? ship.fuel : ship.fuel - cost;
-    final newShip = ship.copyWith(fuel: newFuel);
+    final newShip = ship.copyWith(fuel: ship.fuel - cost);
 
     // Mark target visited.
     final updatedSystems = List<SolarSystem>.from(state.solarSystems);
@@ -103,6 +122,7 @@ class Travel {
         state.debt > 0 ? (state.debt * 1.01).ceil() : state.debt;
 
     // Recalculate trade prices for the new system.
+    final to = state.solarSystems[targetIndex];
     final newBuyPrices =
         Economy.systemBuyPrices(to, state.commander);
     final newSellPrices =
@@ -130,7 +150,9 @@ class Travel {
   }
 
   /// Maximum range of a ship in parsecs (displayed on map).
+  /// A Navigating System stretches each fuel unit 10% further.
   static double maxRange(Ship ship) {
-    return ship.fuel * 2.0;
+    final base = ship.fuel * 2.0;
+    return ship.hasGadget(GadgetType.navigatingSystem) ? base / 0.9 : base;
   }
 }

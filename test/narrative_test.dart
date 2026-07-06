@@ -313,7 +313,8 @@ void main() {
   });
 
   group('GNN news', () {
-    test('crisis statuses make the wire', () {
+    test('crisis statuses make the wire (eventually — coverage is a lead)',
+        () {
       var state = newGame();
       // Quiet galaxy with exactly one crisis.
       final systems = state.solarSystems
@@ -322,12 +323,15 @@ void main() {
       final idx = (state.currentSystemIndex + 1) % systems.length;
       systems[idx] = systems[idx].copyWith(status: SystemStatus.plague);
       state = state.copyWith(solarSystems: systems);
-      final lines = NewsEngine.headlines(state);
-      expect(
-          lines.any((l) =>
-              l.contains('PLAGUE') &&
-              l.contains(systems[idx].name.toUpperCase())),
-          isTrue);
+      // Coverage is probabilistic per day; sample a stretch of days.
+      var found = false;
+      for (var d = 0; d < 40 && !found; d++) {
+        final lines = NewsEngine.headlines(state.copyWith(days: d));
+        found = lines.any((l) =>
+            l.contains('PLAGUE') &&
+            l.contains(systems[idx].name.toUpperCase()));
+      }
+      expect(found, isTrue);
     });
 
     test('witnessed deeds are reported; unwitnessed kills are not', () {
