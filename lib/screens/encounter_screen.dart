@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../engine/combat.dart';
+import '../engine/parley.dart';
 import '../models/enums.dart';
 import '../providers/game_provider.dart';
 
@@ -208,14 +209,15 @@ class _CombatLog extends StatelessWidget {
   }
 }
 
-class _ActionBar extends StatelessWidget {
+class _ActionBar extends ConsumerWidget {
   final CombatState combat;
   final EncounterNotifier notifier;
 
   const _ActionBar({required this.combat, required this.notifier});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final game = ref.watch(gameProvider);
     final actions = <Widget>[
       ElevatedButton(
         onPressed: notifier.attack,
@@ -226,6 +228,19 @@ class _ActionBar extends StatelessWidget {
         child: const Text('FLEE'),
       ),
     ];
+
+    // The engine decides who answers a hail — pirates mid-attack,
+    // fleeing ships, monsters, and rivals past words all refuse.
+    if (game != null && ParleyDirector.canHail(combat, game)) {
+      actions.add(OutlinedButton(
+        onPressed: () {
+          if (ref.read(parleyProvider.notifier).openChannel()) {
+            context.go('/parley');
+          }
+        },
+        child: const Text('HAIL'),
+      ));
+    }
 
     if (combat.encounterType == EncounterType.police && !combat.npcHostile) {
       actions.add(OutlinedButton(

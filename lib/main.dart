@@ -9,6 +9,7 @@ import 'screens/vignette_screen.dart';
 import 'screens/galaxy_map_screen.dart';
 import 'screens/hub_screen.dart';
 import 'screens/new_game_screen.dart';
+import 'screens/parley_screen.dart';
 import 'screens/shipyard_screen.dart';
 import 'screens/trade_screen.dart';
 import 'screens/welcome_screen.dart';
@@ -55,6 +56,10 @@ final _router = GoRouter(
     GoRoute(
       path: '/vignette',
       builder: (context, state) => const VignetteScreen(),
+    ),
+    GoRoute(
+      path: '/parley',
+      builder: (context, state) => const ParleyScreen(),
     ),
   ],
 );
