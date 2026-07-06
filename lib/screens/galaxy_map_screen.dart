@@ -1,6 +1,9 @@
 import 'dart:math';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -9,6 +12,7 @@ import '../models/enums.dart';
 import '../models/game_state.dart';
 import '../models/solar_system.dart';
 import '../providers/game_provider.dart';
+import '../ui/starmap_camera.dart';
 
 class GalaxyMapScreen extends ConsumerStatefulWidget {
   const GalaxyMapScreen({super.key});
@@ -17,46 +21,120 @@ class GalaxyMapScreen extends ConsumerStatefulWidget {
   ConsumerState<GalaxyMapScreen> createState() => _GalaxyMapScreenState();
 }
 
-class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen> {
+class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen>
+    with SingleTickerProviderStateMixin {
   int? _selectedIndex;
-  final TransformationController _transformController =
-      TransformationController();
-  Size _canvasSize = Size.zero;
-  bool _autoZoomed = false;
 
-  static const double _maxZoom = 5.0;
+  late final Ticker _ticker;
+  final ValueNotifier<double> _time = ValueNotifier(0);
+  Duration _lastTick = Duration.zero;
+
+  final StarMapCamera _camera =
+      StarMapCamera(targetX: 75, targetZ: 55, zoom: 4);
+  static const double _maxZoom = 16.0;
+
+  // Fly-to animation.
+  StarMapCamera? _flyFrom;
+  StarMapCamera? _flyTo;
+  double _flyT = 1.0;
+
+  // Gesture state.
+  Offset _lastFocal = Offset.zero;
+  double _lastScale = 1.0;
+  Offset _inertia = Offset.zero;
+
+  bool _initialised = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _ticker = createTicker(_onTick)..start();
+  }
 
   @override
   void dispose() {
-    _transformController.dispose();
+    _ticker.dispose();
+    _time.dispose();
     super.dispose();
   }
 
-  /// Zoom in on the current system so the fuel range fills most of the
-  /// viewport — the "what can I reach right now" view.
-  void _focusRange(GameState game) {
-    if (_canvasSize == Size.zero) return;
-    final scaleX = _canvasSize.width / GalaxyPainter.mapW;
-    final scaleY = _canvasSize.height / GalaxyPainter.mapH;
-    final sys = game.solarSystems[game.currentSystemIndex];
-    final px = sys.x * scaleX;
-    final py = sys.y * scaleY;
+  void _onTick(Duration elapsed) {
+    final dt = _lastTick == Duration.zero
+        ? 0.016
+        : (elapsed - _lastTick).inMicroseconds / 1e6;
+    _lastTick = elapsed;
 
-    final rangePc = Travel.maxRange(game.ship);
-    // Diameter of the range circle in canvas pixels (use the larger axis).
-    final diameterPx = 2 * rangePc * max(scaleX, scaleY);
-    final shortest = min(_canvasSize.width, _canvasSize.height);
-    final zoom =
-        (shortest / (diameterPx * 1.25)).clamp(1.0, _maxZoom).toDouble();
+    // Fly-to animation.
+    if (_flyT < 1.0 && _flyFrom != null && _flyTo != null) {
+      _flyT = min(1.0, _flyT + dt / 0.7);
+      final eased = Curves.easeInOutCubic.transform(_flyT);
+      final pose = lerpCamera(_flyFrom!, _flyTo!, eased);
+      _camera
+        ..targetX = pose.targetX
+        ..targetZ = pose.targetZ
+        ..zoom = pose.zoom;
+    }
 
-    _transformController.value = Matrix4.identity()
-      ..translate(_canvasSize.width / 2, _canvasSize.height / 2)
-      ..scale(zoom)
-      ..translate(-px, -py);
+    // Pan inertia: flick and glide.
+    if (_inertia.distance > 12) {
+      _camera.panScreen(_inertia * dt);
+      _inertia *= exp(-3.5 * dt);
+    }
+
+    // Drives twinkle, pulses, reticle spin, and any camera motion.
+    _time.value = elapsed.inMicroseconds / 1e6;
   }
 
-  void _showFullGalaxy() {
-    _transformController.value = Matrix4.identity();
+  void _flyToPose(double tx, double tz, double zoom) {
+    _flyFrom = _camera.copy();
+    _flyTo = StarMapCamera(targetX: tx, targetZ: tz, zoom: zoom)
+      ..viewport = _camera.viewport;
+    _flyT = 0.0;
+    _inertia = Offset.zero;
+  }
+
+  void _focusRange(GameState game) {
+    final sys = game.solarSystems[game.currentSystemIndex];
+    final rangePc = max(6.0, Travel.maxRange(game.ship));
+    final shortest =
+        min(_camera.viewport.width, _camera.viewport.height);
+    final zoom = (shortest / (rangePc * 2.6))
+        .clamp(_camera.fitZoom(), _maxZoom)
+        .toDouble();
+    _flyToPose(sys.x.toDouble(), sys.y.toDouble(), zoom);
+  }
+
+  void _showFullGalaxy() => _flyToPose(75, 55, _camera.fitZoom());
+
+  int? _wormholeTarget(GameState game) {
+    final here = game.currentSystem;
+    if (here.specialEvent != null && here.specialEvent! >= 1000) {
+      final idx = here.specialEvent! - 1000;
+      if (idx < game.solarSystems.length) return idx;
+    }
+    return null;
+  }
+
+  void _handleTap(TapUpDetails details, GameState game) {
+    const hitRadiusPx = 28.0;
+    int? closest;
+    double closestDist = double.infinity;
+    for (int i = 0; i < game.solarSystems.length; i++) {
+      final sys = game.solarSystems[i];
+      final p = _camera.project(sys.x.toDouble(), sys.y.toDouble());
+      final d = (p - details.localPosition).distance;
+      if (d < closestDist && d < hitRadiusPx) {
+        closestDist = d;
+        closest = i;
+      }
+    }
+
+    if (closest != null && closest != game.currentSystemIndex) {
+      HapticFeedback.selectionClick();
+      setState(() => _selectedIndex = closest);
+    } else {
+      setState(() => _selectedIndex = null);
+    }
   }
 
   @override
@@ -96,60 +174,100 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen> {
           Expanded(
             child: LayoutBuilder(
               builder: (context, constraints) {
-                _canvasSize =
+                _camera.viewport =
                     Size(constraints.maxWidth, constraints.maxHeight);
-                if (!_autoZoomed) {
-                  _autoZoomed = true;
+                if (!_initialised) {
+                  _initialised = true;
+                  // Open on the whole galaxy, then glide into warp range.
+                  _camera
+                    ..targetX = 75
+                    ..targetZ = 55
+                    ..zoom = _camera.fitZoom();
                   WidgetsBinding.instance
                       .addPostFrameCallback((_) => _focusRange(game));
                 }
-                final wormholeTarget = _wormholeTarget(game);
-                return Stack(
-                  children: [
-                    InteractiveViewer(
-                      transformationController: _transformController,
-                      minScale: 1.0,
-                      maxScale: _maxZoom,
-                      child: GestureDetector(
-                        onTapUp: (details) => _handleTap(details, game),
-                        child: CustomPaint(
-                          size: _canvasSize,
-                          painter: GalaxyPainter(
+                return Listener(
+                  onPointerSignal: (signal) {
+                    if (signal is PointerScrollEvent) {
+                      final factor =
+                          signal.scrollDelta.dy > 0 ? 0.88 : 1.14;
+                      _camera.zoomAt(signal.localPosition, factor,
+                          _camera.fitZoom(), _maxZoom);
+                    }
+                  },
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTapUp: (d) => _handleTap(d, game),
+                    onScaleStart: (d) {
+                      _flyT = 1.0; // interrupt any fly-to
+                      _inertia = Offset.zero;
+                      _lastFocal = d.localFocalPoint;
+                      _lastScale = 1.0;
+                    },
+                    onScaleUpdate: (d) {
+                      _camera.panScreen(d.localFocalPoint - _lastFocal);
+                      if (d.scale != _lastScale && _lastScale > 0) {
+                        _camera.zoomAt(d.localFocalPoint,
+                            d.scale / _lastScale, _camera.fitZoom(), _maxZoom);
+                      }
+                      _lastFocal = d.localFocalPoint;
+                      _lastScale = d.scale;
+                    },
+                    onScaleEnd: (d) {
+                      _inertia = d.velocity.pixelsPerSecond;
+                    },
+                    child: Stack(
+                      children: [
+                        CustomPaint(
+                          size: _camera.viewport,
+                          painter: StarMapPainter(
+                            repaint: _time,
+                            time: _time,
+                            camera: _camera,
                             systems: game.solarSystems,
                             currentIndex: game.currentSystemIndex,
                             selectedIndex: _selectedIndex,
                             reachableIndices: reachable,
                             rangeParsecs: Travel.maxRange(game.ship),
-                            wormholeTargetIndex: wormholeTarget,
+                            wormholeTargetIndex: _wormholeTarget(game),
+                            questTargetIndex:
+                                game.activeQuest?.targetSystemIndex,
+                            galaxySeed: game.galaxySeed,
                             cs: cs,
                           ),
                           child: SizedBox(
-                            width: _canvasSize.width,
-                            height: _canvasSize.height,
+                            width: _camera.viewport.width,
+                            height: _camera.viewport.height,
                           ),
                         ),
-                      ),
-                    ),
-                    Positioned(
-                      right: 12,
-                      top: 12,
-                      child: Column(
-                        children: [
-                          IconButton.filledTonal(
-                            icon: const Icon(Icons.my_location, size: 20),
-                            tooltip: 'Focus warp range',
-                            onPressed: () => _focusRange(game),
+                        Positioned(
+                          right: 12,
+                          top: 12,
+                          child: Column(
+                            children: [
+                              IconButton.filledTonal(
+                                icon: const Icon(Icons.my_location, size: 20),
+                                tooltip: 'Focus warp range',
+                                onPressed: () => _focusRange(game),
+                              ),
+                              const SizedBox(height: 8),
+                              IconButton.filledTonal(
+                                icon:
+                                    const Icon(Icons.zoom_out_map, size: 20),
+                                tooltip: 'Full galaxy',
+                                onPressed: _showFullGalaxy,
+                              ),
+                            ],
                           ),
-                          const SizedBox(height: 8),
-                          IconButton.filledTonal(
-                            icon: const Icon(Icons.zoom_out_map, size: 20),
-                            tooltip: 'Full galaxy',
-                            onPressed: _showFullGalaxy,
-                          ),
-                        ],
-                      ),
+                        ),
+                        const Positioned(
+                          left: 12,
+                          top: 12,
+                          child: _MapLegend(),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 );
               },
             ),
@@ -173,330 +291,451 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen> {
       ),
     );
   }
+}
 
-  int? _wormholeTarget(GameState game) {
-    final here = game.currentSystem;
-    if (here.specialEvent != null && here.specialEvent! >= 1000) {
-      final idx = here.specialEvent! - 1000;
-      if (idx < game.solarSystems.length) return idx;
-    }
-    return null;
-  }
+class _MapLegend extends StatelessWidget {
+  const _MapLegend();
 
-  void _handleTap(TapUpDetails details, GameState game) {
-    if (_canvasSize == Size.zero) return;
-    final scaleX = _canvasSize.width / GalaxyPainter.mapW;
-    final scaleY = _canvasSize.height / GalaxyPainter.mapH;
+  @override
+  Widget build(BuildContext context) {
+    Widget dot(Color c) => Container(
+          width: 7,
+          height: 7,
+          decoration: BoxDecoration(
+            color: c,
+            shape: BoxShape.circle,
+            boxShadow: [BoxShadow(color: c.withOpacity(0.7), blurRadius: 4)],
+          ),
+        );
+    Widget item(Widget lead, String label) => Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            lead,
+            const SizedBox(width: 6),
+            Text(label,
+                style: const TextStyle(
+                    fontSize: 9,
+                    letterSpacing: 1.2,
+                    color: Color(0xFF94a3b8),
+                    fontWeight: FontWeight.w600)),
+          ]),
+        );
 
-    // The GestureDetector sits inside the InteractiveViewer, so
-    // localPosition is already in child (canvas) coordinates.
-    final local = details.localPosition;
-
-    // Pick the nearest system within a finger-friendly radius, measured
-    // in canvas pixels (which grow with zoom — zooming in makes targets
-    // physically bigger on screen).
-    const hitRadiusPx = 26.0;
-    int? closest;
-    double closestDist = double.infinity;
-    for (int i = 0; i < game.solarSystems.length; i++) {
-      final sys = game.solarSystems[i];
-      final dx = sys.x * scaleX - local.dx;
-      final dy = sys.y * scaleY - local.dy;
-      final d = sqrt(dx * dx + dy * dy);
-      if (d < closestDist && d < hitRadiusPx) {
-        closestDist = d;
-        closest = i;
-      }
-    }
-
-    if (closest != null && closest != game.currentSystemIndex) {
-      setState(() => _selectedIndex = closest);
-    } else {
-      setState(() => _selectedIndex = null);
-    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xAA0a0e1a),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFF1e2d42)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          item(dot(threatColor(ThreatLevel.safe)), 'SAFE'),
+          item(dot(threatColor(ThreatLevel.contested)), 'CONTESTED'),
+          item(dot(threatColor(ThreatLevel.hostile)), 'HOSTILE'),
+          item(dot(const Color(0xFFa78bfa)), 'WORMHOLE'),
+          item(
+            const Icon(Icons.diamond_outlined,
+                size: 9, color: Color(0xFFfacc15)),
+            'CONTRACT',
+          ),
+        ],
+      ),
+    );
   }
 }
 
-class GalaxyPainter extends CustomPainter {
-  static const double mapW = 150.0;
-  static const double mapH = 110.0;
-
+class StarMapPainter extends CustomPainter {
+  final ValueNotifier<double> time;
+  final StarMapCamera camera;
   final List<SolarSystem> systems;
   final int currentIndex;
   final int? selectedIndex;
   final List<int> reachableIndices;
   final double rangeParsecs;
   final int? wormholeTargetIndex;
+  final int? questTargetIndex;
+  final int galaxySeed;
   final ColorScheme cs;
 
-  const GalaxyPainter({
+  final Map<String, TextPainter> _labelCache = {};
+  List<Offset>? _dustNear;
+  List<Offset>? _dustFar;
+
+  StarMapPainter({
+    required Listenable repaint,
+    required this.time,
+    required this.camera,
     required this.systems,
     required this.currentIndex,
     required this.selectedIndex,
     required this.reachableIndices,
     required this.rangeParsecs,
     required this.wormholeTargetIndex,
+    required this.questTargetIndex,
+    required this.galaxySeed,
     required this.cs,
-  });
+  }) : super(repaint: repaint);
 
   @override
   void paint(Canvas canvas, Size size) {
-    final scaleX = size.width / mapW;
-    final scaleY = size.height / mapH;
+    final t = time.value;
 
-    // Background.
+    // --- deep space backdrop ---
     canvas.drawRect(
-      Rect.fromLTWH(0, 0, size.width, size.height),
-      Paint()..color = const Color(0xFF050810),
+      Offset.zero & size,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFF04060d), Color(0xFF070c18), Color(0xFF04060d)],
+        ).createShader(Offset.zero & size),
     );
 
-    // Draw nebula-like background noise.
-    _drawNebulae(canvas, size);
+    _paintDust(canvas, size, t);
+    _paintNebulae(canvas);
+    _paintGrid(canvas, size);
+    _paintRange(canvas);
+    _paintWormholeLinks(canvas);
+    _paintSystems(canvas, size, t);
+    _paintVignette(canvas, size);
+  }
 
-    // Draw wormhole connections.
+  // Parallax star dust: two layers moving at different fractions of the
+  // camera, which is what sells the depth.
+  void _paintDust(Canvas canvas, Size size, double t) {
+    _dustFar ??= _makeDust(galaxySeed ^ 0xD05, 90);
+    _dustNear ??= _makeDust(galaxySeed ^ 0xD06, 55);
+
+    void layer(List<Offset> pts, double parallax, double maxR, double alpha) {
+      final paint = Paint();
+      for (var i = 0; i < pts.length; i++) {
+        final pt = pts[i];
+        final sx = size.width / 2 +
+            (pt.dx - camera.targetX) * camera.zoom * parallax;
+        final sy = size.height / 2 +
+            (pt.dy - camera.targetZ) * camera.zoom * parallax * 0.64;
+        // Wrap into view so dust is endless.
+        final wx = (sx % (size.width + 40)) - 20;
+        final wy = (sy % (size.height + 40)) - 20;
+        final twinkle =
+            0.6 + 0.4 * sin(t * (0.6 + (i % 7) * 0.13) + i * 1.7);
+        paint.color = Colors.white.withOpacity(alpha * twinkle);
+        canvas.drawCircle(Offset(wx, wy), maxR * (0.5 + (i % 3) * 0.25), paint);
+      }
+    }
+
+    layer(_dustFar!, 0.22, 0.9, 0.20);
+    layer(_dustNear!, 0.45, 1.3, 0.30);
+  }
+
+  List<Offset> _makeDust(int seed, int count) {
+    final rng = Random(seed);
+    return List.generate(
+        count,
+        (_) => Offset(
+            rng.nextDouble() * 400 - 125, rng.nextDouble() * 300 - 95));
+  }
+
+  void _paintNebulae(Canvas canvas) {
+    const blobs = [
+      (30.0, 30.0, 42.0, Color(0xFF12244d)),
+      (105.0, 68.0, 55.0, Color(0xFF0d2038)),
+      (70.0, 18.0, 34.0, Color(0xFF1b1440)),
+      (128.0, 92.0, 38.0, Color(0xFF0e2a33)),
+      (18.0, 88.0, 36.0, Color(0xFF241036)),
+    ];
+    for (final (wx, wz, r, color) in blobs) {
+      final center = camera.project(wx, wz);
+      final p = camera.perspectiveAt(wz);
+      final radius = r * camera.zoom * p;
+      canvas.drawCircle(
+        center,
+        radius,
+        Paint()
+          ..shader = RadialGradient(colors: [
+            color.withOpacity(0.32),
+            color.withOpacity(0.0),
+          ]).createShader(
+              Rect.fromCircle(center: center, radius: radius)),
+      );
+    }
+  }
+
+  void _paintGrid(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = const Color(0xFF35507a).withOpacity(0.14)
+      ..strokeWidth = 1.0;
+    const step = 15.0;
+    // Verticals.
+    for (double x = 0; x <= 150; x += step) {
+      final path = Path()..moveTo0(camera.project(x, 0));
+      for (double z = 5; z <= 110; z += 5) {
+        path.lineTo0(camera.project(x, z));
+      }
+      canvas.drawPath(path, paint..style = PaintingStyle.stroke);
+    }
+    // Horizontals.
+    for (double z = 0; z <= 110; z += step) {
+      final a = camera.project(0, z);
+      final b = camera.project(150, z);
+      canvas.drawLine(a, b, paint);
+    }
+  }
+
+  void _paintRange(Canvas canvas) {
+    if (rangeParsecs <= 0) return;
+    final sys = systems[currentIndex];
+    final path = Path();
+    for (var i = 0; i <= 64; i++) {
+      final a = i / 64 * 2 * pi;
+      final p = camera.project(
+          sys.x + cos(a) * rangeParsecs, sys.y + sin(a) * rangeParsecs);
+      if (i == 0) {
+        path.moveTo(p.dx, p.dy);
+      } else {
+        path.lineTo(p.dx, p.dy);
+      }
+    }
+    path.close();
+    canvas.drawPath(
+        path,
+        Paint()
+          ..color = cs.primary.withOpacity(0.05)
+          ..style = PaintingStyle.fill);
+    canvas.drawPath(
+        path,
+        Paint()
+          ..color = cs.primary.withOpacity(0.38)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2);
+  }
+
+  void _paintWormholeLinks(Canvas canvas) {
+    final paint = Paint()
+      ..color = const Color(0xFF7c3aed).withOpacity(0.45)
+      ..strokeWidth = 1.2
+      ..style = PaintingStyle.stroke;
     for (int i = 0; i < systems.length; i++) {
-      final sys = systems[i];
-      if (sys.specialEvent != null &&
-          sys.specialEvent! >= 1000 &&
-          sys.specialEvent! - 1000 < systems.length) {
-        final targetIdx = sys.specialEvent! - 1000;
-        if (targetIdx > i) {
-          // Draw only once per pair.
-          final target = systems[targetIdx];
-          final p1 = Offset(sys.x * scaleX, sys.y * scaleY);
-          final p2 = Offset(target.x * scaleX, target.y * scaleY);
-          final paint = Paint()
-            ..color = const Color(0xFF7c3aed).withOpacity(0.4)
-            ..strokeWidth = 1.0
-            ..style = PaintingStyle.stroke;
-          _drawDottedLine(canvas, p1, p2, paint);
+      final ev = systems[i].specialEvent;
+      if (ev != null && ev >= 1000 && ev - 1000 < systems.length) {
+        final j = ev - 1000;
+        if (j > i) {
+          _dashedLine(
+              canvas,
+              camera.project(
+                  systems[i].x.toDouble(), systems[i].y.toDouble()),
+              camera.project(
+                  systems[j].x.toDouble(), systems[j].y.toDouble()),
+              paint);
         }
       }
     }
+  }
 
-    // True fuel-range ring around the current system. The map's x/y
-    // scales differ, so a circle in parsecs is an ellipse on screen.
-    final currentSys = systems[currentIndex];
-    final currentPos = Offset(
-        currentSys.x * scaleX, currentSys.y * scaleY);
+  void _paintSystems(Canvas canvas, Size size, double t) {
+    // Draw far-to-near so nearer stars overlap distant ones.
+    final order = List<int>.generate(systems.length, (i) => i)
+      ..sort((a, b) => systems[a].y.compareTo(systems[b].y));
 
-    if (rangeParsecs > 0) {
-      final rangeRect = Rect.fromCenter(
-        center: currentPos,
-        width: 2 * rangeParsecs * scaleX,
-        height: 2 * rangeParsecs * scaleY,
-      );
-      canvas.drawOval(
-        rangeRect,
-        Paint()
-          ..color = cs.primary.withOpacity(0.06)
-          ..style = PaintingStyle.fill,
-      );
-      canvas.drawOval(
-        rangeRect,
-        Paint()
-          ..color = cs.primary.withOpacity(0.35)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.0,
-      );
-    }
-
-    // Draw systems.
-    for (int i = 0; i < systems.length; i++) {
+    for (final i in order) {
       final sys = systems[i];
-      final pos = Offset(sys.x * scaleX, sys.y * scaleY);
-      final isCurrentSystem = i == currentIndex;
+      final pos = camera.project(sys.x.toDouble(), sys.y.toDouble());
+      if (pos.dx < -60 ||
+          pos.dx > size.width + 60 ||
+          pos.dy < -60 ||
+          pos.dy > size.height + 60) {
+        continue;
+      }
+      final persp = camera.perspectiveAt(sys.y.toDouble());
+      final isCurrent = i == currentIndex;
       final isSelected = i == selectedIndex;
       final isReachable = reachableIndices.contains(i);
       final isWormholeExit = i == wormholeTargetIndex;
-      final isVisited = sys.visited;
+      final isQuestTarget = i == questTargetIndex;
 
-      final baseColor = _systemColor(sys.government, cs);
-      final radius = 1.5 + (sys.size - 1) * 0.4;
+      final threat = threatLevel(sys);
+      final baseColor = isCurrent ? cs.primary : threatColor(threat);
+      final dimmed = !isCurrent && !isReachable && !isWormholeExit;
 
-      // Wormhole exit: free transit — mark it before anything else so the
-      // purple ring shows under selection highlights too.
-      if (isWormholeExit && !isCurrentSystem) {
-        canvas.drawCircle(
-            pos, radius + 5,
-            Paint()
-              ..color = const Color(0xFF7c3aed).withOpacity(0.55)
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = 1.4);
-      }
+      final sizeScale = camera.zoom * persp;
+      final twinkle = 1.0 + 0.1 * sin(t * 1.8 + i * 2.3);
+      var r = (1.0 + (sys.size - 1) * 0.35) *
+          (sizeScale * 0.42).clamp(1.6, 5.2) *
+          twinkle;
+      if (dimmed) r *= 0.75;
 
-      if (isCurrentSystem) {
-        // Current system: bright with pulse rings.
-        canvas.drawCircle(pos, radius + 5,
-            Paint()..color = cs.primary.withOpacity(0.08));
-        canvas.drawCircle(pos, radius + 3,
-            Paint()..color = cs.primary.withOpacity(0.15));
-        canvas.drawCircle(pos, radius,
-            Paint()..color = cs.primary);
-        // Crosshair.
-        final crossPaint = Paint()
-          ..color = cs.primary.withOpacity(0.5)
-          ..strokeWidth = 0.5;
-        canvas.drawLine(
-            pos + const Offset(-8, 0), pos + const Offset(-3, 0), crossPaint);
-        canvas.drawLine(
-            pos + const Offset(8, 0), pos + const Offset(3, 0), crossPaint);
-        canvas.drawLine(
-            pos + const Offset(0, -8), pos + const Offset(0, -3), crossPaint);
-        canvas.drawLine(
-            pos + const Offset(0, 8), pos + const Offset(0, 3), crossPaint);
-      } else if (isSelected) {
-        canvas.drawCircle(
-            pos, radius + 4,
-            Paint()
-              ..color = cs.secondary.withOpacity(0.2)
-              ..style = PaintingStyle.fill);
-        canvas.drawCircle(
-            pos, radius + 4,
-            Paint()
-              ..color = cs.secondary.withOpacity(0.6)
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = 1.0);
-        canvas.drawCircle(pos, radius, Paint()..color = cs.secondary);
-      } else if (isReachable) {
-        canvas.drawCircle(
-            pos, radius + 2,
-            Paint()
-              ..color = const Color(0xFF4fc3f7).withOpacity(0.15)
-              ..style = PaintingStyle.fill);
-        canvas.drawCircle(pos, radius,
-            Paint()..color = const Color(0xFF4fc3f7).withOpacity(0.8));
-      } else if (isVisited) {
-        canvas.drawCircle(pos, radius,
-            Paint()..color = baseColor.withOpacity(0.8));
-      } else {
-        // Unvisited, out of range: dim.
-        canvas.drawCircle(pos, radius,
-            Paint()..color = baseColor.withOpacity(0.3));
-      }
+      final alpha = dimmed ? (sys.visited ? 0.45 : 0.28) : 1.0;
+      final color = baseColor.withOpacity(alpha);
 
-      // Names: current, selected, anything in warp range, wormhole exit,
-      // and larger visited systems. In-range names are what lets you pick
-      // a destination at a glance.
-      if (isCurrentSystem ||
-          isSelected ||
-          isReachable ||
-          isWormholeExit ||
-          (isVisited && sys.size >= 3)) {
-        final tp = TextPainter(
-          text: TextSpan(
-            text: sys.name,
-            style: TextStyle(
-              color: isCurrentSystem
-                  ? cs.primary
-                  : isSelected
-                      ? cs.secondary
-                      : isWormholeExit
-                          ? const Color(0xFFa78bfa)
-                          : isReachable
-                              ? const Color(0xFF4fc3f7).withOpacity(0.9)
-                              : cs.onSurface.withOpacity(0.5),
-              fontSize: isReachable || isWormholeExit ? 6 : 7,
-              fontWeight: (isCurrentSystem || isSelected)
-                  ? FontWeight.w700
-                  : FontWeight.w400,
-            ),
-          ),
-          textDirection: TextDirection.ltr,
-        )..layout();
-        tp.paint(
-            canvas,
-            pos +
-                Offset(radius + 2,
-                    -tp.height / 2));
-      }
-    }
-  }
-
-  void _drawNebulae(Canvas canvas, Size size) {
-    final paint = Paint()..style = PaintingStyle.fill;
-    const nebulaPoints = [
-      (0.2, 0.3, 80.0, 0xFF0f172a),
-      (0.7, 0.6, 100.0, 0xFF0c1a2e),
-      (0.5, 0.2, 60.0, 0xFF0a1628),
-      (0.85, 0.85, 70.0, 0xFF0d1b30),
-    ];
-    for (final (rx, ry, r, color) in nebulaPoints) {
-      paint.color = Color(color);
-      final rect = Rect.fromCenter(
-        center: Offset(rx * size.width, ry * size.height),
-        width: r * 2,
-        height: r,
+      // Halo glow.
+      final haloR = r * (dimmed ? 2.2 : 3.4);
+      canvas.drawCircle(
+        pos,
+        haloR,
+        Paint()
+          ..shader = RadialGradient(colors: [
+            color.withOpacity(0.5 * alpha),
+            color.withOpacity(0.0),
+          ]).createShader(Rect.fromCircle(center: pos, radius: haloR)),
       );
-      canvas.drawOval(rect, paint);
+      // Core.
+      canvas.drawCircle(pos, r, Paint()..color = color);
+      canvas.drawCircle(
+          pos, r * 0.45, Paint()..color = Colors.white.withOpacity(alpha));
+
+      // Current system: expanding pulse rings.
+      if (isCurrent) {
+        for (var k = 0; k < 2; k++) {
+          final phase = ((t * 0.6 + k * 0.5) % 1.0);
+          final pr = r + 4 + phase * 16;
+          canvas.drawCircle(
+              pos,
+              pr,
+              Paint()
+                ..color = cs.primary.withOpacity(0.5 * (1 - phase))
+                ..style = PaintingStyle.stroke
+                ..strokeWidth = 1.3);
+        }
+      }
+
+      // Wormhole exit: steady violet ring.
+      if (isWormholeExit) {
+        canvas.drawCircle(
+            pos,
+            r + 5,
+            Paint()
+              ..color = const Color(0xFFa78bfa).withOpacity(0.8)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.5);
+      }
+
+      // Quest target: pulsing gold diamond beacon.
+      if (isQuestTarget) {
+        final pulse = 1.0 + 0.15 * sin(t * 3.0);
+        final d = (r + 7) * pulse;
+        final path = Path()
+          ..moveTo(pos.dx, pos.dy - d)
+          ..lineTo(pos.dx + d, pos.dy)
+          ..lineTo(pos.dx, pos.dy + d)
+          ..lineTo(pos.dx - d, pos.dy)
+          ..close();
+        canvas.drawPath(
+            path,
+            Paint()
+              ..color = const Color(0xFFfacc15).withOpacity(0.9)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.6);
+      }
+
+      // Selection reticle: two counter-rotating arcs.
+      if (isSelected) {
+        final rr = r + 9;
+        final rect = Rect.fromCircle(center: pos, radius: rr);
+        final sweep = pi * 0.55;
+        final reticle = Paint()
+          ..color = cs.secondary
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.8
+          ..strokeCap = StrokeCap.round;
+        canvas.drawArc(rect, t * 1.6, sweep, false, reticle);
+        canvas.drawArc(rect, t * 1.6 + pi, sweep, false, reticle);
+        final rect2 = Rect.fromCircle(center: pos, radius: rr + 5);
+        canvas.drawArc(rect2, -t * 1.1, sweep * 0.6, false,
+            reticle..strokeWidth = 1.0);
+        canvas.drawArc(rect2, -t * 1.1 + pi, sweep * 0.6, false, reticle);
+      }
+
+      // Labels: current/selected/quest always; in-range and wormhole when
+      // there's room; visited majors only when zoomed in.
+      final showLabel = isCurrent ||
+          isSelected ||
+          isQuestTarget ||
+          ((isReachable || isWormholeExit) && sizeScale > 3.0) ||
+          (sys.visited && sys.size >= 3 && sizeScale > 7.0);
+      if (showLabel) {
+        final labelColor = isCurrent
+            ? cs.primary
+            : isSelected
+                ? cs.secondary
+                : isQuestTarget
+                    ? const Color(0xFFfacc15)
+                    : isWormholeExit
+                        ? const Color(0xFFc4b5fd)
+                        : color.withOpacity(max(0.65, alpha));
+        final fontSize = (isCurrent || isSelected) ? 11.0 : 9.5;
+        final tp = _label(sys.name, labelColor, fontSize,
+            bold: isCurrent || isSelected || isQuestTarget);
+        tp.paint(canvas, pos + Offset(r + 7, -tp.height / 2));
+      }
     }
   }
 
-  void _drawDottedLine(
-      Canvas canvas, Offset p1, Offset p2, Paint paint) {
-    const dashLen = 4.0;
-    const gapLen = 4.0;
-    final dx = p2.dx - p1.dx;
-    final dy = p2.dy - p1.dy;
-    final dist = sqrt(dx * dx + dy * dy);
+  TextPainter _label(String text, Color color, double size,
+      {bool bold = false}) {
+    final key = '$text|${color.value}|$size|$bold';
+    return _labelCache.putIfAbsent(key, () {
+      final tp = TextPainter(
+        text: TextSpan(
+          text: text,
+          style: TextStyle(
+            color: color,
+            fontSize: size,
+            letterSpacing: 0.8,
+            fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
+            shadows: const [
+              Shadow(color: Color(0xCC000000), blurRadius: 4),
+            ],
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      return tp;
+    });
+  }
+
+  void _paintVignette(Canvas canvas, Size size) {
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()
+        ..shader = RadialGradient(
+          radius: 1.15,
+          colors: [
+            Colors.transparent,
+            Colors.black.withOpacity(0.42),
+          ],
+          stops: const [0.62, 1.0],
+        ).createShader(Offset.zero & size),
+    );
+  }
+
+  void _dashedLine(Canvas canvas, Offset p1, Offset p2, Paint paint) {
+    const dashLen = 5.0;
+    const gapLen = 5.0;
+    final delta = p2 - p1;
+    final dist = delta.distance;
     if (dist == 0) return;
-    final nx = dx / dist;
-    final ny = dy / dist;
+    final dir = delta / dist;
     double traveled = 0;
     bool drawing = true;
     while (traveled < dist) {
-      final segLen = drawing ? dashLen : gapLen;
-      final end = (traveled + segLen).clamp(0.0, dist);
+      final end = (traveled + (drawing ? dashLen : gapLen)).clamp(0.0, dist);
       if (drawing) {
-        canvas.drawLine(
-          p1 + Offset(nx * traveled, ny * traveled),
-          p1 + Offset(nx * end, ny * end),
-          paint,
-        );
+        canvas.drawLine(p1 + dir * traveled, p1 + dir * end, paint);
       }
       traveled = end;
       drawing = !drawing;
     }
   }
 
-  Color _systemColor(GovernmentType gov, ColorScheme cs) {
-    switch (gov) {
-      case GovernmentType.anarchy:
-      case GovernmentType.feudalState:
-        return const Color(0xFFef4444);
-      case GovernmentType.democracy:
-      case GovernmentType.confederacy:
-        return const Color(0xFF4fc3f7);
-      case GovernmentType.technocracy:
-      case GovernmentType.cyberneticState:
-        return const Color(0xFF34d399);
-      case GovernmentType.militaryState:
-      case GovernmentType.fascistState:
-        return const Color(0xFFf87171);
-      case GovernmentType.communistState:
-      case GovernmentType.socialistState:
-        return const Color(0xFFfb923c);
-      case GovernmentType.capitalistState:
-      case GovernmentType.corporateState:
-        return const Color(0xFFf59e0b);
-      case GovernmentType.monarchy:
-      case GovernmentType.dictatorship:
-        return const Color(0xFFa78bfa);
-      case GovernmentType.pacifistState:
-      case GovernmentType.stateOfSatori:
-        return const Color(0xFF86efac);
-      case GovernmentType.theocracy:
-        return const Color(0xFFfde68a);
-    }
-  }
-
   @override
-  bool shouldRepaint(GalaxyPainter old) =>
-      old.currentIndex != currentIndex ||
-      old.selectedIndex != selectedIndex ||
-      old.reachableIndices != reachableIndices ||
-      old.rangeParsecs != rangeParsecs ||
-      old.wormholeTargetIndex != wormholeTargetIndex;
+  bool shouldRepaint(StarMapPainter old) => true;
+}
+
+extension on Path {
+  void moveTo0(Offset p) => moveTo(p.dx, p.dy);
+  void lineTo0(Offset p) => lineTo(p.dx, p.dy);
 }
 
 class _SystemInfoCard extends StatelessWidget {
@@ -521,6 +760,16 @@ class _SystemInfoCard extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
 
+    final dist = Travel.distance(game.currentSystem, system);
+    final isWormhole =
+        Travel.isWormholePartner(game.currentSystem, selectedIndex);
+    final cost = Travel.fuelCostIndexed(
+        game.solarSystems, game.currentSystemIndex, selectedIndex, game.ship);
+    final affordable = cost <= game.ship.fuel;
+    final threat = threatLevel(system);
+    final isQuestTarget =
+        game.activeQuest?.targetSystemIndex == selectedIndex;
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -536,35 +785,39 @@ class _SystemInfoCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(system.name.toUpperCase(),
-                      style: tt.titleLarge?.copyWith(
-                          color: cs.primary, letterSpacing: 2)),
-                  const SizedBox(height: 4),
-                  Builder(builder: (context) {
-                    final dist = Travel.distance(
-                        game.currentSystem, system);
-                    final isWormhole = Travel.isWormholePartner(
-                        game.currentSystem, selectedIndex);
-                    final cost = Travel.fuelCostIndexed(
-                        game.solarSystems,
-                        game.currentSystemIndex,
-                        selectedIndex,
-                        game.ship);
-                    final affordable = cost <= game.ship.fuel;
-                    return Text(
-                      isWormhole
-                          ? '${dist.toStringAsFixed(1)} pc · WORMHOLE — FREE TRANSIT'
-                          : '${dist.toStringAsFixed(1)} pc · $cost FUEL',
-                      style: tt.bodySmall?.copyWith(
-                        color: isWormhole
-                            ? const Color(0xFFa78bfa)
-                            : affordable
-                                ? cs.secondary
-                                : cs.error,
-                        fontWeight: FontWeight.w600,
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(system.name.toUpperCase(),
+                            overflow: TextOverflow.ellipsis,
+                            style: tt.titleLarge?.copyWith(
+                                color: cs.primary, letterSpacing: 2)),
                       ),
-                    );
-                  }),
+                      const SizedBox(width: 8),
+                      _chip(
+                        threat.name.toUpperCase(),
+                        threatColor(threat),
+                      ),
+                      if (isQuestTarget) ...[
+                        const SizedBox(width: 6),
+                        _chip('CONTRACT', const Color(0xFFfacc15)),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    isWormhole
+                        ? '${dist.toStringAsFixed(1)} pc · WORMHOLE — FREE TRANSIT'
+                        : '${dist.toStringAsFixed(1)} pc · $cost FUEL',
+                    style: tt.bodySmall?.copyWith(
+                      color: isWormhole
+                          ? const Color(0xFFa78bfa)
+                          : affordable
+                              ? cs.secondary
+                              : cs.error,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                   const SizedBox(height: 2),
                   Text(
                     '${system.government.displayName} · Tech ${system.techLevel} · ${system.status.displayName}',
@@ -606,6 +859,25 @@ class _SystemInfoCard extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _chip(String label, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: color.withOpacity(0.5)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+            color: color,
+            fontSize: 9,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 1.2),
       ),
     );
   }
