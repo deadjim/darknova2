@@ -13,6 +13,7 @@ class EncounterResult {
   final bool npcFleeing;
   final String? rivalId; // set when this encounter is a named rival
   final String? captainName;
+  final bool ambush; // they picked the moment — vignette-spawned attacks
 
   const EncounterResult({
     required this.type,
@@ -20,6 +21,7 @@ class EncounterResult {
     required this.npcFleeing,
     this.rivalId,
     this.captainName,
+    this.ambush = false,
   });
 }
 

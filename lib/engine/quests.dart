@@ -175,7 +175,12 @@ class QuestSystem {
 
   static Quest? _rollFreightContract(GameState state, Random rng, int pressure) {
     if (rng.nextInt(100) >= 15 + pressure) return null;
+    return freightContract(state, rng);
+  }
 
+  /// A plain freight contract with no dice gate — also used as the quest
+  /// seeded by a derelict's recovered manifest.
+  static Quest? freightContract(GameState state, Random rng) {
     final here = state.currentSystem;
     // Pick a good that's actually in stock here.
     final stocked = TradeGood.values

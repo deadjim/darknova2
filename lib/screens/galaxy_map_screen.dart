@@ -92,11 +92,11 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen> {
               isReachable: reachable.contains(_selectedIndex),
               selectedIndex: _selectedIndex!,
               onWarp: () {
-                final encounter = ref
+                final route = ref
                     .read(gameProvider.notifier)
                     .warpTo(_selectedIndex!);
                 setState(() => _selectedIndex = null);
-                context.go(encounter ? '/encounter' : '/game');
+                context.go(route);
               },
               onClose: () => setState(() => _selectedIndex = null),
             ),

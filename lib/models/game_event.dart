@@ -18,6 +18,10 @@ enum GameEventType {
   questAccepted,
   questCompleted,
   questFailed,
+  rescuePerformed, // answered a mayday — heroism, witnessed
+  maydayIgnored, // jumped past a distress call and someone lived to say so
+  derelictSalvaged, // quiet salvage, no one watching
+  cargoSeized, // handed quest cargo to an interdictor
 }
 
 /// One entry in the galaxy's event ledger.

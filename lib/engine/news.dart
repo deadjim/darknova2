@@ -87,6 +87,15 @@ class NewsEngine {
         return 'GOOD NEWS WIRE: ${event.detail ?? "CONTRACT"} — FULFILLED';
       case GameEventType.questFailed:
         return 'CONTRACT DEFAULT REPORTED: ${event.detail ?? "UNNAMED JOB"}';
+      case GameEventType.rescuePerformed:
+        return 'HERO OF THE SPACEWAYS: CAPTAIN $who ANSWERS MAYDAY '
+            'NEAR $where';
+      case GameEventType.maydayIgnored:
+        return 'SURVIVORS SPEAK: PASSING SHIP "$who" IGNORED MAYDAY '
+            'NEAR $where';
+      case GameEventType.cargoSeized:
+        return 'INTERDICTION NEAR $where: CONTRACT CARGO SEIZED '
+            'FROM FREIGHTER';
       // Unwitnessed-only types never reach here, but keep the switch total.
       case GameEventType.pirateDestroyed:
       case GameEventType.policeDestroyed:
@@ -95,6 +104,7 @@ class NewsEngine {
       case GameEventType.rivalDefeated:
       case GameEventType.policeBribed:
       case GameEventType.questAccepted:
+      case GameEventType.derelictSalvaged:
         return null;
     }
   }

@@ -89,7 +89,14 @@ class CombatState {
       playerShieldHp: playerShields,
       playerMaxShieldHp: playerShields,
       outcome: CombatOutcome.ongoing,
-      log: const [],
+      log: encounter.ambush
+          ? [
+              encounter.captainName != null
+                  ? '${encounter.captainName} drops out of warp behind you '
+                      '— an ambush!'
+                  : 'They were waiting for you — an ambush!'
+            ]
+          : const [],
       rivalId: encounter.rivalId,
       captainName: encounter.captainName,
     );

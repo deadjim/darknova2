@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../engine/arrival.dart';
 import '../engine/combat.dart';
 import '../engine/economy.dart';
 import '../engine/encounter.dart';
@@ -89,11 +90,11 @@ class GameStateNotifier extends StateNotifier<GameState?> {
 
   final Random _rng = Random();
 
-  /// Warp to a system. Returns true if an encounter interrupts the trip
-  /// (the caller should route to the encounter screen).
-  bool warpTo(int targetIndex) {
+  /// Warp to a system. Returns the route the UI should take next:
+  /// '/game' (uneventful), '/encounter' (combat), or '/vignette'.
+  String warpTo(int targetIndex) {
     final current = state;
-    if (current == null) return false;
+    if (current == null) return '/game';
     final couldWarp = Travel.canReach(current.currentSystem,
         current.solarSystems[targetIndex], current.ship);
     var next = GameEngine.warpTo(current, targetIndex);
@@ -107,15 +108,20 @@ class GameStateNotifier extends StateNotifier<GameState?> {
 
     state = next;
     saveGame();
-    if (!couldWarp) return false;
+    if (!couldWarp) return '/game';
 
-    final encounter = GameEngine.rollEncounter(state!, _rng);
-    if (encounter == null) return false;
+    final outcome = ArrivalDirector.roll(state!, _rng);
+    if (outcome.vignette != null) {
+      _ref.read(vignetteProvider.notifier).begin(outcome.vignette!);
+      return '/vignette';
+    }
+    final encounter = outcome.encounter;
+    if (encounter == null) return '/game';
     if (encounter.rivalId != null) {
       state = RivalSystem.markMet(state!, encounter.rivalId!);
     }
     _ref.read(encounterProvider.notifier).begin(encounter, state!.ship);
-    return true;
+    return '/encounter';
   }
 
   // ---------------------------------------------------------------------------
@@ -411,6 +417,64 @@ final galaxySystemsProvider = Provider<List<SolarSystem>>((ref) {
   final game = ref.watch(gameProvider);
   return game?.solarSystems ?? [];
 });
+
+// ---------------------------------------------------------------------------
+// Arrival vignettes
+// ---------------------------------------------------------------------------
+
+/// UI state for an in-progress vignette.
+class VignetteUiState {
+  final ArrivalEvent event;
+  final String? resultText; // set once resolved
+  final bool toCombat; // resolution handed off to an encounter
+
+  const VignetteUiState(this.event, {this.resultText, this.toCombat = false});
+}
+
+class VignetteNotifier extends StateNotifier<VignetteUiState?> {
+  VignetteNotifier(this._ref) : super(null);
+
+  final Ref _ref;
+  final Random _rng = Random();
+
+  void begin(ArrivalEvent event) => state = VignetteUiState(event);
+
+  void clear() => state = null;
+
+  void choose(VignetteChoice choice) {
+    final current = state;
+    final game = _ref.read(gameProvider);
+    if (current == null || game == null || current.resultText != null) return;
+
+    final resolution =
+        ArrivalDirector.resolve(current.event, game, choice, _rng);
+    _ref.read(gameProvider.notifier).applyGameState(resolution.game);
+
+    if (resolution.updated != null) {
+      // Scan: same vignette, more information.
+      state = VignetteUiState(resolution.updated!);
+      return;
+    }
+    if (resolution.combat != null) {
+      final encounter = resolution.combat!;
+      var latest = _ref.read(gameProvider)!;
+      if (encounter.rivalId != null) {
+        latest = RivalSystem.markMet(latest, encounter.rivalId!);
+        _ref.read(gameProvider.notifier).applyGameState(latest);
+      }
+      _ref.read(encounterProvider.notifier).begin(encounter, latest.ship);
+      state = VignetteUiState(current.event,
+          resultText: resolution.text, toCombat: true);
+      return;
+    }
+    state = VignetteUiState(current.event, resultText: resolution.text);
+  }
+}
+
+final vignetteProvider =
+    StateNotifierProvider<VignetteNotifier, VignetteUiState?>(
+  (ref) => VignetteNotifier(ref),
+);
 
 /// GNN headlines derived from public game state.
 final newsProvider = Provider<List<String>>((ref) {
