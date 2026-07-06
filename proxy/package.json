@@ -1,0 +1,19 @@
+{
+  "name": "darknova-proxy",
+  "version": "0.1.0",
+  "description": "Backend LLM proxy for Dark Nova ][ — Claude-generated flavor prose (dialogue + GNN news). The game engine stays authoritative; this service narrates.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0",
+    "express": "^5.1.0",
+    "zod": "^4.0.0"
+  }
+}
