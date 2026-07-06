@@ -10,6 +10,7 @@ import '../engine/economy.dart';
 import '../engine/encounter.dart';
 import '../engine/game_engine.dart';
 import '../engine/news.dart';
+import '../engine/parley.dart';
 import '../engine/quests.dart';
 import '../engine/rivals.dart';
 import '../engine/travel.dart';
@@ -343,6 +344,10 @@ class EncounterNotifier extends StateNotifier<CombatState?> {
     state = CombatState.begin(encounter, playerShip);
   }
 
+  /// Replace the combat state directly (used by the parley flow, whose
+  /// outcomes round-trip through the same [CombatState] machinery).
+  void applyCombat(CombatState combat) => state = combat;
+
   void clear() => state = null;
 
   void _apply(CombatResult? result) {
@@ -397,6 +402,64 @@ class EncounterNotifier extends StateNotifier<CombatState?> {
 final encounterProvider =
     StateNotifierProvider<EncounterNotifier, CombatState?>(
   (ref) => EncounterNotifier(ref),
+);
+
+// ---------------------------------------------------------------------------
+// Parley (hailing during encounters)
+// ---------------------------------------------------------------------------
+
+/// UI state for an open comm channel.
+class ParleyUiState {
+  final ParleySession session;
+  final bool resolved; // the encounter ended in talk
+  final bool escalated; // channel closed, combat continues
+
+  const ParleyUiState(this.session,
+      {this.resolved = false, this.escalated = false});
+
+  bool get over => resolved || escalated;
+}
+
+/// Drives an active parley. Every choice round-trips through the engine's
+/// [ParleyDirector], mutating both the encounter's [CombatState] and the
+/// persistent [GameState].
+class ParleyNotifier extends StateNotifier<ParleyUiState?> {
+  ParleyNotifier(this._ref) : super(null);
+
+  final Ref _ref;
+  final Random _rng = Random();
+
+  /// Open a channel to the current encounter. Returns false if they
+  /// don't answer (the engine decides hailability).
+  bool openChannel() {
+    final combat = _ref.read(encounterProvider);
+    final game = _ref.read(gameProvider);
+    if (combat == null || game == null) return false;
+    if (!ParleyDirector.canHail(combat, game)) return false;
+    state = ParleyUiState(ParleyDirector.open(combat, game, _rng));
+    return true;
+  }
+
+  void choose(ParleyOption option) {
+    final current = state;
+    final combat = _ref.read(encounterProvider);
+    final game = _ref.read(gameProvider);
+    if (current == null || combat == null || game == null || current.over) {
+      return;
+    }
+    final result =
+        ParleyDirector.choose(current.session, combat, game, option, _rng);
+    _ref.read(gameProvider.notifier).applyGameState(result.game);
+    _ref.read(encounterProvider.notifier).applyCombat(result.combat);
+    state = ParleyUiState(result.session,
+        resolved: result.resolved, escalated: result.escalated);
+  }
+
+  void clear() => state = null;
+}
+
+final parleyProvider = StateNotifierProvider<ParleyNotifier, ParleyUiState?>(
+  (ref) => ParleyNotifier(ref),
 );
 
 /// The current solar system (non-null only when game is active).
