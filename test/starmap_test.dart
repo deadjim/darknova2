@@ -10,6 +10,7 @@ import 'package:darknova2/engine/game_engine.dart';
 import 'package:darknova2/engine/sphere.dart';
 import 'package:darknova2/models/enums.dart';
 import 'package:darknova2/models/game_state.dart';
+import 'package:darknova2/models/solar_system.dart';
 import 'package:darknova2/providers/game_provider.dart';
 import 'package:darknova2/screens/galaxy_map_screen.dart';
 import 'package:darknova2/ui/globe_camera.dart';
@@ -254,6 +255,81 @@ void main() {
       await tester.tapAt(const Offset(120, 420));
       await tester.pump(const Duration(milliseconds: 50));
       expect(tester.takeException(), isNull);
+
+      await tester.tap(find.byTooltip('Wormholes'));
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(milliseconds: 90));
+      }
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.byTooltip('Wormholes'));
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(milliseconds: 90));
+      }
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('selecting a wormhole endpoint shows the wormhole chip',
+        (tester) async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      container
+          .read(gameProvider.notifier)
+          .newGame('Tester', DifficultyLevel.normal);
+      final game = container.read(gameProvider)!;
+
+      final wormholeIndex = game.solarSystems.indexWhere(
+          (s) => s.specialEvent != null && s.specialEvent! >= 1000);
+      expect(wormholeIndex, greaterThanOrEqualTo(0),
+          reason: 'the galaxy always has 12 wormhole pairs');
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            home: GalaxyMapScreen(debugInitialSelection: wormholeIndex),
+          ),
+        ),
+      );
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(milliseconds: 90));
+      }
+
+      expect(find.textContaining('WORMHOLE →'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('wormholeOf', () {
+    SolarSystem system({int? specialEvent}) => SolarSystem(
+          name: 'Testworld',
+          techLevel: 1,
+          government: GovernmentType.democracy,
+          status: SystemStatus.uneventful,
+          x: 0,
+          y: 55,
+          specialResource: SpecialResource.nothingSpecial,
+          size: 3,
+          tradeQuantities: const {},
+          countdown: 0,
+          visited: false,
+          specialEvent: specialEvent,
+        );
+
+    test('returns the partner index for a valid wormhole encoding', () {
+      expect(wormholeOf(system(specialEvent: 1005), 400), 5);
+    });
+
+    test('returns null when specialEvent is null', () {
+      expect(wormholeOf(system(specialEvent: null), 400), isNull);
+    });
+
+    test('returns null when specialEvent is below the wormhole threshold',
+        () {
+      expect(wormholeOf(system(specialEvent: 999), 400), isNull);
+    });
+
+    test('returns null when the partner index is out of range', () {
+      expect(wormholeOf(system(specialEvent: 1005), 4), isNull);
     });
   });
 }

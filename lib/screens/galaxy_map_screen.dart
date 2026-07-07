@@ -15,8 +15,27 @@ import '../models/solar_system.dart';
 import '../providers/game_provider.dart';
 import '../ui/globe_camera.dart';
 
+/// Returns the wormhole partner index of [s], or `null` if [s] has no
+/// wormhole, or its `specialEvent` doesn't encode one, or the encoded
+/// partner index falls outside `[0, systemCount)`.
+///
+/// Kept top-level (not `_`-prefixed) rather than as a private member so
+/// `test/starmap_test.dart` — a separate library — can call it directly.
+int? wormholeOf(SolarSystem s, int systemCount) {
+  final ev = s.specialEvent;
+  if (ev == null || ev < 1000) return null;
+  final partner = ev - 1000;
+  if (partner >= systemCount) return null;
+  return partner;
+}
+
 class GalaxyMapScreen extends ConsumerStatefulWidget {
-  const GalaxyMapScreen({super.key});
+  const GalaxyMapScreen({super.key, this.debugInitialSelection});
+
+  /// Test only. Seeds `_selectedIndex` in `initState` so widget tests can
+  /// exercise selection-dependent UI without simulating a tap. Always
+  /// `null` in production.
+  final int? debugInitialSelection;
 
   @override
   ConsumerState<GalaxyMapScreen> createState() => _GalaxyMapScreenState();
@@ -25,6 +44,7 @@ class GalaxyMapScreen extends ConsumerStatefulWidget {
 class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen>
     with SingleTickerProviderStateMixin {
   int? _selectedIndex;
+  bool _wormholeMode = false;
 
   late final Ticker _ticker;
   final ValueNotifier<double> _time = ValueNotifier(0);
@@ -53,6 +73,7 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen>
   @override
   void initState() {
     super.initState();
+    _selectedIndex = widget.debugInitialSelection;
     _ticker = createTicker(_onTick)..start();
   }
 
@@ -119,13 +140,15 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen>
   void _showFullGalaxy() =>
       _flyToPose(_camera.yaw, _camera.pitch, _fitRadius);
 
-  int? _wormholeTarget(GameState game) {
-    final here = game.currentSystem;
-    if (here.specialEvent != null && here.specialEvent! >= 1000) {
-      final idx = here.specialEvent! - 1000;
-      if (idx < game.solarSystems.length) return idx;
-    }
-    return null;
+  int? _wormholeTarget(GameState game) =>
+      wormholeOf(game.currentSystem, game.solarSystems.length);
+
+  /// The wormhole partner of the currently SELECTED system (distinct from
+  /// [_wormholeTarget], which is the current ship's own wormhole exit).
+  int? _selectedWormholePartner(GameState game) {
+    if (_selectedIndex == null) return null;
+    return wormholeOf(
+        game.solarSystems[_selectedIndex!], game.solarSystems.length);
   }
 
   void _handleTap(TapUpDetails details, GameState game) {
@@ -179,6 +202,7 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen>
         'CONTRACT');
     add(_wormholeTarget(game), const Color(0xFFa78bfa), 'WORMHOLE');
     add(_selectedIndex, Theme.of(context).colorScheme.secondary, '');
+    add(_selectedWormholePartner(game), const Color(0xFFa78bfa), '');
     return pois;
   }
 
@@ -286,6 +310,7 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen>
                             reachableIndices: reachable,
                             rangeParsecs: Travel.maxRange(game.ship),
                             wormholeTargetIndex: _wormholeTarget(game),
+                            wormholeMode: _wormholeMode,
                             questTargetIndex:
                                 game.activeQuest?.targetSystemIndex,
                             galaxySeed: game.galaxySeed,
@@ -313,6 +338,20 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen>
                                 tooltip: 'Whole globe',
                                 onPressed: _showFullGalaxy,
                               ),
+                              const SizedBox(height: 8),
+                              _wormholeMode
+                                  ? IconButton.filled(
+                                      icon: const Icon(Icons.hub, size: 20),
+                                      tooltip: 'Wormholes',
+                                      onPressed: () => setState(
+                                          () => _wormholeMode = false),
+                                    )
+                                  : IconButton.filledTonal(
+                                      icon: const Icon(Icons.hub, size: 20),
+                                      tooltip: 'Wormholes',
+                                      onPressed: () => setState(
+                                          () => _wormholeMode = true),
+                                    ),
                             ],
                           ),
                         ),
@@ -411,6 +450,7 @@ class GlobePainter extends CustomPainter {
   final List<int> reachableIndices;
   final double rangeParsecs;
   final int? wormholeTargetIndex;
+  final bool wormholeMode;
   final int? questTargetIndex;
   final int galaxySeed;
   final ColorScheme cs;
@@ -429,6 +469,7 @@ class GlobePainter extends CustomPainter {
     required this.reachableIndices,
     required this.rangeParsecs,
     required this.wormholeTargetIndex,
+    required this.wormholeMode,
     required this.questTargetIndex,
     required this.galaxySeed,
     required this.cs,
@@ -451,7 +492,7 @@ class GlobePainter extends CustomPainter {
     _paintDust(canvas, size, t);
     _paintGlobeBody(canvas);
     _paintGraticule(canvas);
-    _paintWormholeLinks(canvas);
+    _paintWormholeLinks(canvas, t);
     _paintRangeCap(canvas);
     _paintSystems(canvas, size, t);
     _paintLimbMarkers(canvas, t);
@@ -589,22 +630,41 @@ class GlobePainter extends CustomPainter {
     }
   }
 
-  void _paintWormholeLinks(Canvas canvas) {
+  void _paintWormholeLinks(Canvas canvas, double t) {
+    var pairIndex = 0;
     for (int i = 0; i < systems.length; i++) {
-      final ev = systems[i].specialEvent;
-      if (ev != null && ev >= 1000 && ev - 1000 < systems.length) {
-        final j = ev - 1000;
-        if (j > i) {
-          final a = camera.projectChart(systems[i].x, systems[i].y);
-          final b = camera.projectChart(systems[j].x, systems[j].y);
-          final throughGlass = !a.front || !b.front;
-          final paint = Paint()
-            ..color = const Color(0xFF7c3aed)
-                .withOpacity(throughGlass ? 0.22 : 0.5)
-            ..strokeWidth = 1.2
-            ..style = PaintingStyle.stroke;
-          _dashedLine(canvas, a.screen, b.screen, paint);
+      final j = wormholeOf(systems[i], systems.length);
+      if (j != null && j > i) {
+        final a = camera.projectChart(systems[i].x, systems[i].y);
+        final b = camera.projectChart(systems[j].x, systems[j].y);
+        final throughGlass = !a.front || !b.front;
+        // Full strength while the overlay is on, or while this link
+        // touches the selected system (§5a).
+        final emphasize =
+            wormholeMode || selectedIndex == i || selectedIndex == j;
+        final paint = Paint()
+          ..color = const Color(0xFF7c3aed).withOpacity(emphasize
+              ? (throughGlass ? 0.35 : 0.85)
+              : (throughGlass ? 0.22 : 0.5))
+          ..strokeWidth = 1.2
+          ..style = PaintingStyle.stroke;
+        // Marching dashes always run, a (lower index) -> b (higher index).
+        _dashedLine(canvas, a.screen, b.screen, paint, phase: t * 14.0);
+
+        if (emphasize) {
+          final f = (t * 0.30 + pairIndex * 0.23) % 1.0;
+          final dotPos = a.screen + (b.screen - a.screen) * f;
+          canvas.drawCircle(
+            dotPos,
+            6,
+            Paint()
+              ..shader = RadialGradient(colors: [
+                const Color(0xFFa78bfa).withOpacity(0.9),
+                const Color(0xFFa78bfa).withOpacity(0.0),
+              ]).createShader(Rect.fromCircle(center: dotPos, radius: 6)),
+          );
         }
+        pairIndex++;
       }
     }
   }
@@ -671,11 +731,17 @@ class GlobePainter extends CustomPainter {
       final isReachable = reachableIndices.contains(i);
       final isWormholeExit = i == wormholeTargetIndex;
       final isQuestTarget = i == questTargetIndex;
+      final hasWormhole = wormholeOf(sys, systems.length) != null;
+      final isSelectedPartner = selectedIndex != null &&
+          wormholeOf(systems[selectedIndex!], systems.length) == i;
 
       final threat = threatLevel(sys);
       final baseColor = isCurrent ? cs.primary : threatColor(threat);
 
       if (!p.front) {
+        // Wormhole mode: everything but wormhole endpoints and the
+        // current system fades out entirely on the back hemisphere.
+        if (wormholeMode && !hasWormhole && !isCurrent) continue;
         // Ghost LOD: at low zoom, only draw every other back-hemisphere
         // system — plenty to sense the far side without the cost.
         if (camera.radiusPx < 420 && i.isOdd) continue;
@@ -696,7 +762,8 @@ class GlobePainter extends CustomPainter {
           twinkle;
       if (dimmed) r *= 0.72;
 
-      final alpha = dimmed ? (sys.visited ? 0.45 : 0.30) : 1.0;
+      var alpha = dimmed ? (sys.visited ? 0.45 : 0.30) : 1.0;
+      if (wormholeMode && !hasWormhole && !isCurrent) alpha *= 0.35;
       final color = baseColor.withOpacity(alpha);
 
       // Halo LOD: skip the (relatively expensive) radial-gradient halo
@@ -742,6 +809,33 @@ class GlobePainter extends CustomPainter {
               ..strokeWidth = 1.5);
       }
 
+      // Wormhole overlay: every endpoint gets an expanding double pulse.
+      if (wormholeMode && hasWormhole) {
+        for (var k = 0; k < 2; k++) {
+          final phase = ((t * 0.6 + k * 0.5) % 1.0);
+          canvas.drawCircle(
+              pos,
+              r + 4 + phase * 16,
+              Paint()
+                ..color = const Color(0xFFa78bfa).withOpacity(0.6 * (1 - phase))
+                ..style = PaintingStyle.stroke
+                ..strokeWidth = 1.3);
+        }
+      }
+
+      // Selection emphasis (§5b): the selected system's wormhole partner
+      // gets a single pulse ring regardless of overlay mode.
+      if (isSelectedPartner) {
+        final phase = (t * 0.6) % 1.0;
+        canvas.drawCircle(
+            pos,
+            r + 4 + phase * 16,
+            Paint()
+              ..color = const Color(0xFFa78bfa).withOpacity(0.6 * (1 - phase))
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.3);
+      }
+
       if (isQuestTarget) {
         final pulse = 1.0 + 0.15 * sin(t * 3.0);
         final d = (r + 7) * pulse;
@@ -780,6 +874,7 @@ class GlobePainter extends CustomPainter {
       final showLabel = isCurrent ||
           isSelected ||
           isQuestTarget ||
+          (wormholeMode && hasWormhole) ||
           ((isReachable || isWormholeExit) && labelBudget > 320) ||
           (sys.visited && sys.size >= 3 && labelBudget > 760);
       if (showLabel) {
@@ -789,7 +884,7 @@ class GlobePainter extends CustomPainter {
                 ? cs.secondary
                 : isQuestTarget
                     ? const Color(0xFFfacc15)
-                    : isWormholeExit
+                    : (isWormholeExit || (wormholeMode && hasWormhole))
                         ? const Color(0xFFc4b5fd)
                         : color.withOpacity(max(0.65, alpha));
         final fontSize = (isCurrent || isSelected) ? 11.0 : 9.5;
@@ -834,6 +929,10 @@ class GlobePainter extends CustomPainter {
     marker(questTargetIndex, const Color(0xFFfacc15), 'CONTRACT');
     marker(wormholeTargetIndex, const Color(0xFFa78bfa), '');
     marker(selectedIndex, cs.secondary, '');
+    final selectedPartner = selectedIndex != null
+        ? wormholeOf(systems[selectedIndex!], systems.length)
+        : null;
+    marker(selectedPartner, const Color(0xFFa78bfa), 'EXIT');
   }
 
   TextPainter _label(String text, Color color, double size,
@@ -874,14 +973,17 @@ class GlobePainter extends CustomPainter {
     );
   }
 
-  void _dashedLine(Canvas canvas, Offset p1, Offset p2, Paint paint) {
+  void _dashedLine(Canvas canvas, Offset p1, Offset p2, Paint paint,
+      {double phase = 0.0}) {
     const dashLen = 5.0;
     const gapLen = 5.0;
+    const cycle = dashLen + gapLen;
     final delta = p2 - p1;
     final dist = delta.distance;
     if (dist == 0) return;
     final dir = delta / dist;
-    double traveled = 0;
+    // Negative modulo in Dart can be negative — normalize into [0, cycle).
+    double traveled = ((-phase % cycle) + cycle) % cycle;
     bool drawing = true;
     while (traveled < dist) {
       final end = (traveled + (drawing ? dashLen : gapLen)).clamp(0.0, dist);
@@ -928,6 +1030,7 @@ class _SystemInfoCard extends StatelessWidget {
     final threat = threatLevel(system);
     final isQuestTarget =
         game.activeQuest?.targetSystemIndex == selectedIndex;
+    final wormholePartner = wormholeOf(system, game.solarSystems.length);
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -952,15 +1055,26 @@ class _SystemInfoCard extends StatelessWidget {
                             style: tt.titleLarge?.copyWith(
                                 color: cs.primary, letterSpacing: 2)),
                       ),
-                      const SizedBox(width: 8),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
                       _chip(
                         threat.name.toUpperCase(),
                         threatColor(threat),
                       ),
-                      if (isQuestTarget) ...[
-                        const SizedBox(width: 6),
+                      if (isQuestTarget)
                         _chip('CONTRACT', const Color(0xFFfacc15)),
-                      ],
+                      if (wormholePartner != null)
+                        _chip(
+                          'WORMHOLE → '
+                          '${game.solarSystems[wormholePartner].name.toUpperCase()}',
+                          const Color(0xFFa78bfa),
+                        ),
                     ],
                   ),
                   const SizedBox(height: 4),
