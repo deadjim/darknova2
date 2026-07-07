@@ -1,206 +1,213 @@
-# SPEC: Dark Nova ][ Multiplayer — "GALNET"
+# SPEC: Dark Nova ][ Multiplayer — "GALNET" (v2, Trade Wars lineage)
 
 Status: **DESIGN DRAFT — for review with Shon before any implementation.**
-Author: design session 2026-07-07.
+v1 2026-07-07; v2 same day after direction: "not MMO, but Trade Wars
+2002 style" — real stakes while offline, auto-defense by stats/dice,
+cloaks and hiding, insurance, turn limits, message boards.
 
 ## The thesis
 
-Dark Nova's soul is that **fame and infamy are information** — deeds
-travel only if witnessed, the news is how the galaxy learns who you are.
-That mechanic is *already* a multiplayer design: it just needs other
-people on the receiving end.
+Dark Nova's witness mechanic — fame and infamy as *information* — is
+already a multiplayer design. v2 marries it to the Trade Wars 2002
+formula: an **asynchronous persistent world with real consequences**.
+Your ship exists in the galaxy even while you sleep. Someone can hunt
+it. It fights back with your build and your crew's skills, rolled on
+the same combat engine everything else uses. You can cloak, hide in an
+anomaly, park under core-world police protection, bank your credits,
+and buy insurance — every defense is a real decision, and every loss
+is bounded and recoverable. Nothing is ever real-time; everything is
+dice, preparation, and reputation. And every station has a wall to
+scrawl on.
 
-So: not an MMO, not real-time co-presence. **An asynchronous shared
-universe** where every player flies their own game, but their witnessed
-deeds, market footprints, and ship silhouettes propagate to everyone
-else's galaxy through the same information channels the single-player
-game already has (GNN, encounters, rumors). Play alone at 2am; wake to
-find your mayday-ignoring cowardice is sector news and someone posted a
-bounty on you.
+Why this beats both MMO and my safer v1 draft:
+- **Turn limits are the great equalizer** (TW2002's core trick): with
+  warps capped per real day, the offline player isn't behind — everyone
+  spends the same turns. It also gives the shared economy a real-time
+  pulse without a shared game clock.
+- **Danger creates society.** Consequence-free ghosts (v1) make other
+  players scenery. Raidable ships make them *neighbors* — worth
+  scouting, taxing, avenging, or leaving warnings about on the wall.
 
-Why async beats real-time here:
-- **Playability**: sessions of any length count; no lobbies, no waiting,
-  no dead servers at low population. One other active player per week is
-  already fun (their name keeps appearing in your news).
-- **Fit**: turn-based warp loop + personal narrative (quests, rivals,
-  vignettes) would be diluted, not enhanced, by live co-presence.
-- **Feasibility**: no netcode, no tick sync. REST + polling on the VPS
-  we already run. The engine is pure Dart — **the server reuses the
-  exact same engine code** for validation and news rendering.
+## Design pillars (v2)
 
-## Design pillars
+1. **Offline-first, forever.** Unlinked games are the full single-player
+   experience, unchanged and unlimited. GALNET is opt-in at new game.
+2. **Bounded loss, never ruin.** Turn caps bound exposure. Banked
+   credits are untouchable. Insurance floors ship loss. Escape means
+   you always continue playing *that same commander*. Personal
+   narrative (quests, rivals, vignettes, police record) is never
+   PvP-touchable. The sting is real; the wipeout is impossible.
+3. **Geography is consent.** Parked under core-world police you are
+   effectively safe. The frontier pays better and protects nobody.
+   Players choose their exposure by where they fly and park — no
+   PvP toggle, no separate servers.
+4. **The witness mechanic scales socially.** Raids, escapes, and
+   betrayals feed the shared GNN under the same rules: survivors talk,
+   dead ships don't. Hunt anonymously or famously — your choice, made
+   with dice.
+5. **Server-authoritative where players touch.** Anything raidable or
+   competitive lives server-side; the solo story stays on-device.
 
-1. **Offline-first, forever.** The full single-player game works with
-   zero connectivity. GALNET is an opt-in link that enriches it.
-2. **Your progress is yours.** No player can destroy, steal, or roll
-   back another player's save. All PvP is mediated through ghosts,
-   reputation, and competition — never direct loss.
-3. **Server-authoritative only where players touch.** Personal layer
-   (credits, cargo, quests, rivals) stays client-side — a cheater there
-   only cheats their own story. Anything that affects *other* players
-   (news, ghosts, bounties, leaderboards, contracts) is server-verified.
-4. **The witness mechanic scales socially.** Destroy a player's ghost
-   with no witnesses and its owner never learns who did it — just "lost
-   contact near the Vaeldun Gulf." Leave a survivor and your name is in
-   their morning news. This is the whole game, multiplied.
+## Seasons & identity (carried from v1)
 
-## The two-layer world
+- Season = one shared galaxy seed, ~8 weeks; all linked players fly the
+  same 400 systems. Handle + token auth (recovery code shown once).
+  Season end: leaderboards freeze, an LLM-written **season chronicle**
+  is generated from the public ledger, new seed. Handles and lifetime
+  prestige persist; material state does not.
+- Unlinked/legacy games can read the news wire only.
 
-| Layer | Contents | Authority | Offline behavior |
-|---|---|---|---|
-| Personal | ship, credits, cargo, quests, rivals, vignettes, police record, personal day counter | Client | unchanged |
-| Shared (GALNET) | news feed, player presence/ghosts, bounty board, market pressure, golden contracts, leaderboards, season chronicle | Server | absent; game falls back to pure local sim |
+## The turn economy
 
-**The clock problem, solved by not sharing a clock.** Single-player time
-advances per-warp (player-driven); a shared economy usually demands a
-shared clock. We don't share the economy — we share *pressure on it*:
-real-time decaying modifiers (below). Personal days, quest deadlines,
-and interest keep working untouched, online or off.
+- Linked season games get **50 warp-turns per real day**, accruing
+  continuously (≈1 per 29 min), banked up to **150**. Warping costs 1
+  turn (wormhole transit too — free fuel, not free time). Everything
+  else (trading, combat rounds, boards, shipyard) is turn-free.
+- Out of turns = you can still dock, trade, read boards, fight if
+  attacked — you just can't warp. Sessions stay meaningful at any
+  length; no-lifing buys breadth, not safety.
+- Solo/unlinked games: no turn limits, nothing changes.
 
-## Seasons
+## Persistent presence: your ship in the world
 
-- A **season** = one shared galaxy seed, ~8 weeks. Every linked player
-  flies the *same* 400 systems — shared geography is what makes "meet
-  me in the Korris Expanse" and "avoid the Deep, someone's hunting
-  there" possible.
-- New game while linked → season seed. Existing/offline games keep
-  their private seeds and can only consume the news feed (read-only
-  GALNET) — full features require season games.
-- Season end: leaderboards freeze, a **season chronicle** is generated
-  from the full public event ledger (this is a flagship LLM feature
-  later — the server has every witnessed deed of every player), new
-  seed begins. Old season saves remain playable offline.
+When linked, your ship has a **canonical server-side state**: location,
+build (hull/weapons/shields/gadgets), carried cargo & credits, banked
+credits, pod/insurance flags, parked posture. It updates every time you
+dock or warp (each turn spent syncs). While you're offline, your ship
+is *parked* wherever you left it.
 
-## Features by phase
+### Parking postures (chosen at logout/dock, default = safest available)
 
-### Phase 1 — The Shared Wire (small, huge payoff)
-- **Link**: commander handle + server-issued token (stored in prefs; a
-  recovery code shown once). No email/password in v1.
-- **Event publishing**: client pushes its *witnessed* ledger events
-  (typed `GameEvent`s, not prose) on dock/warp, batched. Unwitnessed
-  events NEVER leave the device — secrets stay secret even from us
-  being tempted to use them.
-- **Shared GNN**: server merges all players' public events + the
-  season world's crisis wire into one feed; clients interleave it with
-  local headlines. Your news now contains real people:
-  "CMDR VOSS IGNORED MAYDAY NEAR TYCHO — SURVIVORS SPEAK."
-- **Presence**: "last seen docked at X" per commander, shown on a
-  GALNET roster screen.
-- Server renders headlines with the same `NewsEngine` templates by
-  reusing the engine package (see Architecture).
+| Posture | Requirement | Effect while offline |
+|---|---|---|
+| **Docked, core** | system threat tier SAFE | Unraidable. Police jump any attacker (attacker fights the *police fleet* first, eats a −30 record hit and sector-wide news). |
+| **Docked, contested/hostile** | — | Raidable, but station defenses add +2 effective fighter skill and attacker pays a docking-assault news event (always witnessed — stations have cameras). |
+| **Cloaked drift** | Cloaking Device gadget | Hidden from scans: 85% undetectable per scan attempt (attacker scanner gadget improves odds). Found = normal fight, no station bonus. |
+| **Anomaly shelter** | park in a nebula-anomaly system (each region has ~1; discoverable, marked on map once visited) | Undetectable, period. But anomaly systems have no market/shipyard and entering/leaving costs +1 turn — safety is a detour. |
+| **Open berth** | — (the default if you just close the app in space) | Fully scannable. Don't sleep in the open on the frontier. |
 
-### Phase 2 — Market Pressure
-- Aggregate *server-verified* trade reports (good, qty, system, buy/
-  sell) produce per-(system, good) **price modifiers**, capped ±25%,
-  decaying over real hours. Clients apply modifiers on top of local
-  price computation while linked.
-- Emergent play: a crisis makes the news → five players race medicine
-  to the plague world → price collapses for the latecomers. The market
-  now remembers that other people exist, without a shared clock.
-- Trade reports are plausibility-checked server-side against the season
-  galaxy (does that system trade that good? is qty ≤ ship class max?)
-  and rate-limited. Perfect anti-cheat is a non-goal (pillar 3).
+### Raids: attacking an offline ship
 
-### Phase 3 — Ghosts & Bounties
-- **Ghost snapshots**: on dock, client uploads ship build + commander
-  name + threat profile. Other players' Arrival Director may (low
-  frequency, cap ~1 per session, opt-out) roll a **ghost encounter**:
-  an engine-AI-driven NPC flying that exact build, hailing as
-  "CMDR <handle>". Fighting it is a normal encounter for you; the owner
-  loses nothing — they get a GALNET notification whose content obeys
-  the witness rules (survivor → they know who; no witness → "contact
-  lost", attacker unknown).
-- **Renown**: a server-side currency earned ONLY through verified
-  multiplayer acts (ghost victories, contract wins, fame milestones).
-  Client credits can't buy it, so client-side cheating can't touch the
-  competitive layer.
-- **Bounty board**: post Renown on a commander (because their deeds in
-  the news annoyed you, or for sport). Defeating that commander's ghost
-  claims it. Bounties are visible on the roster and in the news —
-  social drama as content.
+- Attacker must be in the same system, spend a scan (and beat cloak
+  odds if any), then commit to the assault — **no take-backs, and the
+  raid consumes 3 turns** (scouting, positioning, the fight).
+- Combat resolves **server-side** with the existing engine
+  (`Combat.attack` loop): defender fights back automatically using
+  their real build and skills, plus posture bonuses. Seeded dice; the
+  full combat log is stored and delivered to both parties.
+- Defender AI policy (set in settings): *fight to the end*, *flee at
+  50% hull* (pilot-skill escape rolls, exactly like live combat), or
+  *surrender cargo if outgunned* (lose carried cargo, keep ship).
+- **Stakes if the defender's ship dies**: attacker loots carried cargo
+  + carried credits (not bank). Defender's pod fires — **online or
+  offline, linked commanders never die permanently**: no pod = respawn
+  in a rescue Flea at the nearest core world (harsh); pod = same but
+  dignified; insurance = ship-value payout on top (premiums and the
+  no-claim counter finally earn their keep). Quests in progress fail
+  naturally if the cargo died with the ship. Narrative state untouched.
+- **Stakes for the attacker**: real combat risk against the defender's
+  build (raiding a Wasp in a Flea is suicide-by-dice); a witnessed raid
+  (any survivor, any docked assault, any police response) puts their
+  name in the galaxy-wide news and makes them bountyable; police
+  record consequences mirror live combat rules.
+- **Witness rules apply**: destroy an open-berth ship in deep frontier
+  with no survivors (pod away = the survivor IS the witness — pods talk)
+  and the victim learns only "your ship was lost near X." Pods
+  guarantee the victim learns the attacker's name — insurance includes
+  the flight recorder. So flying podless is anonymity for your killer;
+  one more real trade-off.
 
-### Phase 4 — Competition
-- **Golden contracts**: server-posted, first-to-deliver races
-  ("40 medicine to Japori — 5,000 Renown, expires in 72h"), verified by
-  trade reports. The async equivalent of a raid.
-- **Leaderboards**: per season, from server-verified data only: Renown,
-  contracts won, ghost record, "most newsworthy" (headline count —
-  infamy counts!).
+### Finding people
 
-### Phase 5 — future, out of scope for this spec
-Live duels (real-time, both online), co-op convoys, player messages
-(parley-style LLM-mediated hails between commanders), shared player-run
-stations.
+- **Port logs**: every station lists the last ~10 dockings (handle,
+  real-day timestamp) — unless the visitor paid the harbormaster to be
+  scrubbed (credits sink, lawless systems only).
+- **Scanner sweeps**: a scan lists non-hidden parked ships in-system.
+- **The news**: deeds leave trails. The wall (below) leaves better ones.
+- Roster shows region-level location only ("last seen: Korris Expanse").
 
-## Architecture
+## Banking
 
-```
-Flutter client (web/PWA, later stores)
-   │  HTTPS JSON, bearer token; poll on dock/warp + 60s while map open
-   ▼
-Caddy (2.darknova.org)  ──  /api/*  ──►  darknova-server (Dart, :8095)
-                                          │  systemd user unit, VPS
-                                          ▼
-                                        SQLite (season.db)
-```
+High-tech systems (tech ≥ 6) host the **Bank of the Galaxy**: deposit/
+withdraw carried credits, 2% deposit fee (credit sink). Banked credits
+are unlootable and fund bounty escrow. Carried credits are loot. The
+walk from a big score back to a bank branch through hostile space is
+now a genre-defining moment — as it was in 2002.
 
-- **Engine extraction (the one real refactor):** move `lib/engine/` +
-  `lib/models/` into `packages/darknova_core` — a pure-Dart package the
-  Flutter app AND the server both depend on (the app's pubspec gains a
-  path dependency; imports change `package:darknova2/engine/...` →
-  `package:darknova_core/engine/...`; zero logic changes). This is
-  mechanical, Sonnet-speccable, and is Phase 0.
-- **Server**: Dart `shelf` app in `server/` (same repo). Reuses
-  `darknova_core` for: season galaxy generation (seed → identical
-  world), news template rendering, trade plausibility checks, ghost
-  encounter validation. SQLite via `sqlite3`. Deployed like everything
-  else here: rsync + systemd + Caddy route (no PaaS).
-- **Client**: a `GalnetService` (Riverpod provider) that queues
-  outbound events while offline and syncs opportunistically. UI: link
-  screen, GALNET feed section in the hub news panel (tagged so players
-  can tell galactic news from player news), roster/bounty screen
-  (Phase 3).
-- **Rate/abuse**: token-bucket per commander; handle profanity filter;
-  block list (client-side mute + server honor); event schema validation.
+## Bounties (reworked from v1)
 
-## What stays deliberately single-player
+With server-authoritative banks, bounties are **real credits in
+escrow** (v1's Renown-only design is dropped; prestige survives as a
+leaderboard stat). Post from your bank balance on any handle; claiming
+requires destroying that commander's ship in a raid or defense
+(server-verified). Multiple bounties stack. The board is public and
+juicy news fodder. Minimum bounty high enough to be an insult worth
+having (1,000 cr).
 
-Quests, rivals, vignettes, and the police/reputation ladders remain
-personal narrative — every player has their own Vex Marrow. Rationale:
-these systems are paced for one protagonist; sharing them creates
-contention for story beats instead of drama. The shared layer gets its
-drama from *people*, not from splitting the campaign.
+## Message boards — "the wall"
 
-## Cost & effort sketch
+Every station has a board; every board is a bathroom wall.
 
-| Phase | Server | Client | Notes |
-|---|---|---|---|
-| 0 engine extraction | — | mechanical refactor | Sonnet + spec, low risk |
-| 1 wire | ~600 LOC | ~400 LOC | biggest bang/buck |
-| 2 market | ~300 | ~150 | needs balance tuning |
-| 3 ghosts/bounties | ~500 | ~400 | most design-sensitive |
-| 4 competition | ~300 | ~200 | mostly server |
+- Post at any station you're docked at: 240 chars, pinned to that
+  system, newest-first, capped ~50 visible (older fade out).
+- **Signed or anonymous.** Anonymous posts cost 100 cr (the
+  harbormaster's discretion fee) and high police-record commanders
+  can't post anonymously in core systems (everyone knows the hero).
+- Boards are where the game's society actually happens: warnings
+  ("VOSS camps the Tycho wormhole"), taunts, trade intel true and
+  false, eulogies, bounty ads. Server-side: profanity filter, 5
+  posts/day/commander, report + shadow-delete, block list.
+- Later LLM hook: NPC dockworkers occasionally reply.
 
-VPS load: trivial (JSON + SQLite; hundreds of players fine on the $12
-box). Marginal cost ≈ $0 until LLM chronicle.
+## Shared market pressure (unchanged from v1, now with teeth)
+
+Server-verified trades produce capped (±25%), real-time-decaying price
+modifiers per (system, good). Turn caps make cornering a market a
+multi-day campaign instead of a no-life afternoon.
+
+## Authority model (v2 — sharper than v1)
+
+| State | Authority | Notes |
+|---|---|---|
+| Ship build, location, carried cargo/credits, bank, posture, turns | **Server** | The PvP-touchable core. Client actions (buy/sell/warp/park) are commands the server validates against ITS state (prices within modifier bounds, cargo ≤ bays, turns available). |
+| Combat vs players (raids/defenses) | **Server** | Engine runs server-side, seeded dice, stored logs. |
+| Quests, rivals, vignettes, police record, reputation, solo encounters | **Client** | Personal narrative. Server ingests *witnessed* events for news only. |
+| News, boards, bounties, port logs, leaderboards | **Server** | |
+
+Honest note: solo-encounter outcomes still feed credits/cargo deltas
+that the server accepts within plausibility bounds (bounty tables,
+cargo-class caps, rate limits). A determined cheater can inflate their
+solo income; they cannot mint bank balance arbitrarily fast, cannot
+fake raid outcomes, and cannot touch anyone else's state. Good enough
+for friendly seasons; tighten later if it matters.
+
+## Phases (v2)
+
+| Phase | Contents | Notes |
+|---|---|---|
+| 0 | Extract `packages/darknova_core` (engine+models, pure Dart); server skeleton (shelf + SQLite) behind Caddy `/api` | mechanical; Sonnet-speccable |
+| 1 | Link/auth, season seed, shared GNN wire, presence + port logs, **message boards** | boards moved up from v1 — cheap, defining |
+| 2 | Turn economy + server-canonical ship state + banking | the big architectural step |
+| 3 | Raids: postures, scans, server combat, pods/insurance, loot; bounty escrow | the Trade Wars heart |
+| 4 | Market pressure, golden contracts, leaderboards, season chronicle (LLM) | |
+| 5 (future) | Live duels, convoys, corp/guild structures, player stations with citadel-style defenses | TW2002 citadels, one day |
 
 ## Open questions for our review
 
-1. **Ghost frequency & consent**: opt-out default on or off? My lean:
-   ON by default (it's consequence-free and it's the fun), with a
-   settings toggle.
-2. **Market pressure at all?** Phase 2 is the only feature that touches
-   game balance. Alternative: ship Phases 1+3 and skip 2 until the
-   economy proves it needs it. My lean: build it, cap it hard.
-3. **Renown vs credits** for bounties — I chose Renown to firewall
-   client-side cheating; costs us the visceral "10,000 credits on your
-   head." Worth it?
-4. **Season length** (8 weeks?) and what carries across seasons
-   (handle + lifetime Renown + chronicle mentions; nothing material?).
-5. **Handle impersonation**: reserve canonical handles first-come
-   per-season or globally?
-6. **When**: multiplayer before or after the LLM proxy? They're
-   independent workstreams, but the season chronicle and ghost-parley
-   both get much better with the proxy live. My lean: proxy first
-   (single-player gets richer for everyone), multiplayer Phase 0+1
-   right after.
+1. **Turn budget**: 50/day banked to 150 — feel right? (TW2002 ran
+   150–250 but its turns were cheaper actions.)
+2. **Offline-death severity**: v2 says never permadeath (rescue Flea at
+   worst). TW2002 was crueler. Keep the floor, or is losing an
+   uninsured Wasp not scary enough for you?
+3. **Raid turn cost** (3) and cloak odds (85%) are dials I made up —
+   playtest and tune, or reason harder now?
+4. **Anonymous wall posts**: keep, or does every post being signed make
+   better society? (My lean: keep anonymity, it's the bathroom wall.)
+5. **Defender AI policy default**: fight / flee-at-50% / surrender —
+   I'd default to flee-at-50%.
+6. **Solo-income plausibility bounds**: how much anti-cheat rigor
+   before it stops being fun to build? My lean: bounds + rate limits,
+   nothing fancier this year.
+7. **Sequencing vs LLM proxy**: unchanged recommendation — proxy first,
+   then Phases 0–1. Boards + wire alone will make the game feel
+   inhabited.
