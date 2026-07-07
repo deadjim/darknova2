@@ -20,7 +20,8 @@ void main() {
       final game = GameEngine.newGame('T', DifficultyLevel.normal);
       final a = game.solarSystems[0];
       final b = game.solarSystems[50];
-      expect(SphereGeo.distance(a, a), closeTo(0, 1e-9));
+      // acos(dot ≈ 1.0) carries sub-microparsec float noise.
+      expect(SphereGeo.distance(a, a), closeTo(0, 1e-4));
       expect(SphereGeo.distance(a, b), SphereGeo.distance(b, a));
       for (final s in game.solarSystems) {
         final d = SphereGeo.distance(a, s);
