@@ -25,13 +25,13 @@ void main() {
       systems = GalaxyGenerator.generate(42, DifficultyLevel.normal);
     });
 
-    test('generates exactly 120 solar systems', () {
-      expect(systems.length, equals(120));
+    test('generates exactly 400 solar systems', () {
+      expect(systems.length, equals(400));
     });
 
     test('all system names are unique', () {
       final names = systems.map((s) => s.name).toSet();
-      expect(names.length, equals(120));
+      expect(names.length, equals(systems.length));
     });
 
     test('no two systems overlap (within minimum spacing)', () {
@@ -44,8 +44,12 @@ void main() {
           if (dist < 3.0) overlaps++;
         }
       }
-      // Allow a small number of near-overlaps (relaxed placement fallback).
-      expect(overlaps, lessThan(5));
+      // Dramatic clustering (spec §2.2) deliberately packs systems into
+      // dense reaches, so chart-grid near-overlaps are expected at N=400
+      // (a handful of systems may even round to the same cell — see
+      // spec Pitfalls). Bound generously; this just guards against a
+      // placement regression, not against clustering itself.
+      expect(overlaps, lessThan(80));
     });
 
     test('all systems are within map bounds', () {
@@ -314,9 +318,10 @@ void main() {
     });
 
     test('distance is great-circle on the galactic sphere', () {
-      // Same latitude, Δlon = 6/150·2π; hand-computed geodesic ≈ 2.54 pc.
+      // Same latitude, Δlon = 6/150·2π; hand-computed geodesic ≈ 2.54 pc
+      // at R=36; scales linearly with SphereGeo.radius.
       final d = Travel.distance(a, b);
-      expect(d, closeTo(2.54, 0.05));
+      expect(d, closeTo(2.54 * SphereGeo.radius / 36, 0.1));
       // The antipode is exactly half a circumference away.
       expect(Travel.distance(a, c), closeTo(pi * SphereGeo.radius, 0.5));
     });
@@ -370,7 +375,7 @@ void main() {
       expect(state.credits, equals(1000));
       expect(state.debt, equals(0));
       expect(state.days, equals(0));
-      expect(state.solarSystems.length, equals(120));
+      expect(state.solarSystems.length, equals(400));
       expect(state.ship.shipType, equals(ShipType.gnat));
       expect(state.ship.hullStrength, greaterThan(0));
       expect(state.ship.fuel, greaterThan(0));

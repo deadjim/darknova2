@@ -14,6 +14,7 @@ class SolarSystem {
   final int countdown;        // days until status change
   final bool visited;
   final int? specialEvent;    // index into special events list, null if none
+  final String region;        // named cluster/reach this system belongs to
 
   const SolarSystem({
     required this.name,
@@ -28,6 +29,7 @@ class SolarSystem {
     required this.countdown,
     required this.visited,
     this.specialEvent,
+    this.region = '',
   });
 
   SolarSystem copyWith({
@@ -43,6 +45,7 @@ class SolarSystem {
     int? countdown,
     bool? visited,
     Object? specialEvent = _sentinel,
+    String? region,
   }) {
     return SolarSystem(
       name: name ?? this.name,
@@ -58,6 +61,7 @@ class SolarSystem {
       visited: visited ?? this.visited,
       specialEvent:
           specialEvent == _sentinel ? this.specialEvent : specialEvent as int?,
+      region: region ?? this.region,
     );
   }
 
@@ -76,6 +80,7 @@ class SolarSystem {
       'countdown': countdown,
       'visited': visited,
       'specialEvent': specialEvent,
+      'region': region,
     };
   }
 
@@ -100,6 +105,7 @@ class SolarSystem {
       countdown: json['countdown'] as int,
       visited: json['visited'] as bool,
       specialEvent: json['specialEvent'] as int?,
+      region: json['region'] as String? ?? '',
     );
   }
 

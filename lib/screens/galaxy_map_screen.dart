@@ -676,6 +676,9 @@ class GlobePainter extends CustomPainter {
       final baseColor = isCurrent ? cs.primary : threatColor(threat);
 
       if (!p.front) {
+        // Ghost LOD: at low zoom, only draw every other back-hemisphere
+        // system — plenty to sense the far side without the cost.
+        if (camera.radiusPx < 420 && i.isOdd) continue;
         // Ghosts through the glass — enough to sense the far side.
         canvas.drawCircle(
             pos,
@@ -696,16 +699,22 @@ class GlobePainter extends CustomPainter {
       final alpha = dimmed ? (sys.visited ? 0.45 : 0.30) : 1.0;
       final color = baseColor.withOpacity(alpha);
 
-      final haloR = r * (dimmed ? 2.2 : 3.4);
-      canvas.drawCircle(
-        pos,
-        haloR,
-        Paint()
-          ..shader = RadialGradient(colors: [
-            color.withOpacity(0.5 * alpha),
-            color.withOpacity(0.0),
-          ]).createShader(Rect.fromCircle(center: pos, radius: haloR)),
-      );
+      // Halo LOD: skip the (relatively expensive) radial-gradient halo
+      // when dimmed at low zoom, or when the star is too small to show
+      // it meaningfully — draw only the core + white center instead.
+      final skipHalo = (dimmed && camera.radiusPx < 420) || r < 2.0;
+      if (!skipHalo) {
+        final haloR = r * (dimmed ? 2.2 : 3.4);
+        canvas.drawCircle(
+          pos,
+          haloR,
+          Paint()
+            ..shader = RadialGradient(colors: [
+              color.withOpacity(0.5 * alpha),
+              color.withOpacity(0.0),
+            ]).createShader(Rect.fromCircle(center: pos, radius: haloR)),
+        );
+      }
       canvas.drawCircle(pos, r, Paint()..color = color);
       canvas.drawCircle(
           pos, r * 0.45, Paint()..color = Colors.white.withOpacity(alpha));
@@ -771,8 +780,8 @@ class GlobePainter extends CustomPainter {
       final showLabel = isCurrent ||
           isSelected ||
           isQuestTarget ||
-          ((isReachable || isWormholeExit) && labelBudget > 210) ||
-          (sys.visited && sys.size >= 3 && labelBudget > 520);
+          ((isReachable || isWormholeExit) && labelBudget > 320) ||
+          (sys.visited && sys.size >= 3 && labelBudget > 760);
       if (showLabel) {
         final labelColor = isCurrent
             ? cs.primary
@@ -970,7 +979,7 @@ class _SystemInfoCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    '${system.government.displayName} · Tech ${system.techLevel} · ${system.status.displayName}',
+                    '${system.government.displayName} · Tech ${system.techLevel} · ${system.status.displayName}${system.region.isEmpty ? '' : ' · ${system.region}'}',
                     style: tt.bodySmall,
                   ),
                   if (system.specialResource !=

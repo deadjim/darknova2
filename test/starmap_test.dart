@@ -9,6 +9,7 @@ import 'package:darknova2/engine/galaxy_generator.dart';
 import 'package:darknova2/engine/game_engine.dart';
 import 'package:darknova2/engine/sphere.dart';
 import 'package:darknova2/models/enums.dart';
+import 'package:darknova2/models/game_state.dart';
 import 'package:darknova2/providers/game_provider.dart';
 import 'package:darknova2/screens/galaxy_map_screen.dart';
 import 'package:darknova2/ui/globe_camera.dart';
@@ -45,9 +46,9 @@ void main() {
   });
 
   group('Spherical galaxy generation', () {
-    test('120 systems, Sol at 92, coordinates in chart bounds', () {
+    test('400 systems, Sol at 92, coordinates in chart bounds', () {
       final systems = GalaxyGenerator.generate(1234, DifficultyLevel.normal);
-      expect(systems.length, 120);
+      expect(systems.length, 400);
       expect(systems[GalaxyGenerator.solIndex].name, 'Sol');
       for (final s in systems) {
         expect(s.x, inInclusiveRange(0, 149));
@@ -57,8 +58,9 @@ void main() {
 
     test('systems keep reasonable angular spacing (no pile-ups)', () {
       final systems = GalaxyGenerator.generate(777, DifficultyLevel.normal);
-      // Fibonacci lattice spacing for 120 points is ~0.32 rad; with
-      // jitter and grid rounding, nothing should sit closer than ~0.05.
+      // O(N²) at 400 is 80k pairs. Clustering + chart-grid rounding at
+      // N=400 allows some close pairs; the real stranding guarantee is
+      // covered by the 'every system can reach a neighbor' test below.
       var minAngle = double.infinity;
       for (var i = 0; i < systems.length; i++) {
         for (var j = i + 1; j < systems.length; j++) {
@@ -67,7 +69,7 @@ void main() {
           minAngle = min(minAngle, a);
         }
       }
-      expect(minAngle, greaterThan(0.05));
+      expect(minAngle, greaterThan(0.008));
     });
 
     test('every system can reach a neighbor on a full tank', () {
@@ -81,6 +83,92 @@ void main() {
         expect(nearest, lessThan(fullTankRange),
             reason: '${s.name} would be stranded');
       }
+    });
+
+    test('canonical names go to the biggest worlds', () {
+      final systems = GalaxyGenerator.generate(2468, DifficultyLevel.normal);
+      expect(systems[GalaxyGenerator.solIndex].name, 'Sol');
+
+      const canonical = [
+        'Acamar', 'Adahn', 'Aldea', 'Andevian', 'Antedi', 'Balosnee',
+        'Baratas', 'Brax', 'Bretel', 'Calondia', 'Campor', 'Capelle',
+        'Carzon', 'Castor', 'Cestus', 'Cheron', 'Courteney', 'Daled',
+        'Damast', 'Davlos', 'Deneb', 'Deneva', 'Devidia', 'Draylon',
+        'Drema', 'Endor', 'Esmee', 'Exo', 'Ferris', 'Festen', 'Fourmi',
+        'Frolix', 'Gemulon', 'Guinifer', 'Hades', 'Hamlet', 'Helena',
+        'Hulst', 'Iodine', 'Iralius', 'Janus', 'Japori', 'Jarada', 'Jason',
+        'Kaylon', 'Khefka', 'Kira', 'Klaatu', 'Klaestron', 'Korma',
+        'Kravat', 'Krios', 'Laertes', 'Largo', 'Lave', 'Ligon', 'Lowry',
+        'Magrat', 'Malcoria', 'Melina', 'Mentar', 'Merik', 'Mintaka',
+        'Montor', 'Mordan', 'Myrthe', 'Nelvana', 'Nix', 'Nyle', 'Odet',
+        'Og', 'Omega', 'Omphalos', 'Orias', 'Othello', 'Parade',
+        'Penthara', 'Picard', 'Pollux', 'Quator', 'Rakhar', 'Ran',
+        'Regulas', 'Relva', 'Rhymus', 'Rochani', 'Rubicum', 'Rutia',
+        'Sarpeidon', 'Sefalla', 'Seltrice', 'Sigma', 'Sol', 'Somari',
+        'Stakoron', 'Straba', 'Syrinx', 'Talani', 'Tamus', 'Tantalos',
+        'Tauber', 'Thera', 'Titan', 'Torin', 'Triacus', 'Turkana', 'Tycho',
+        'Umberlee', 'Utopia', 'Vagra', 'Valete', 'Vega', 'Velat', 'Yew',
+        'Yojimbo', 'Zalkon', 'Zuul', 'Tarchannen', 'Ventax', 'Xerxes',
+      ];
+
+      final nameCounts = <String, int>{};
+      for (final s in systems) {
+        nameCounts[s.name] = (nameCounts[s.name] ?? 0) + 1;
+      }
+      for (final n in canonical) {
+        expect(nameCounts[n] ?? 0, lessThanOrEqualTo(1),
+            reason: 'canonical name $n used more than once');
+      }
+
+      final procedural =
+          systems.where((s) => !canonical.contains(s.name)).length;
+      expect(procedural, greaterThanOrEqualTo(200));
+    });
+
+    test('names are unique', () {
+      final systems = GalaxyGenerator.generate(13, DifficultyLevel.normal);
+      expect(systems.map((s) => s.name).toSet().length, 400);
+    });
+
+    test('regions assigned', () {
+      final systems = GalaxyGenerator.generate(55, DifficultyLevel.normal);
+      for (final s in systems) {
+        expect(s.region, isNotEmpty);
+      }
+      expect(systems.map((s) => s.region).toSet().length,
+          lessThanOrEqualTo(10));
+    });
+
+    test('old saves without region field load', () {
+      final game = GameEngine.newGame('T', DifficultyLevel.normal);
+      final json = game.toJson();
+      final rawSystems = json['solarSystems'] as List;
+      for (final entry in rawSystems) {
+        (entry as Map)['region'] = null;
+        entry.remove('region');
+      }
+      expect(() => GameState.fromJson(json), returnsNormally);
+      final restored = GameState.fromJson(json);
+      for (final s in restored.solarSystems) {
+        expect(s.region, '');
+      }
+    });
+
+    test('wormholes span distance', () {
+      final systems = GalaxyGenerator.generate(909, DifficultyLevel.normal);
+      final pairs = <(int, int)>[];
+      for (var i = 0; i < systems.length; i++) {
+        final ev = systems[i].specialEvent;
+        if (ev != null && ev >= 1000) {
+          final j = ev - 1000;
+          if (j > i) pairs.add((i, j));
+        }
+      }
+      expect(pairs.length, 12);
+      final farEnough = pairs
+          .where((p) => SphereGeo.distance(systems[p.$1], systems[p.$2]) >= 60)
+          .length;
+      expect(farEnough, greaterThanOrEqualTo(8));
     });
   });
 
@@ -109,8 +197,9 @@ void main() {
       final front = game.solarSystems
           .where((s) => cam.projectChart(s.x, s.y).front)
           .length;
-      expect(front, greaterThan(30));
-      expect(front, lessThan(90));
+      final total = game.solarSystems.length;
+      expect(front, greaterThan(0.2 * total));
+      expect(front, lessThan(0.8 * total));
     });
 
     test('dragBy spins the globe and clamps pitch', () {

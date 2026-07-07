@@ -13,10 +13,10 @@ import '../models/solar_system.dart';
 class SphereGeo {
   SphereGeo._();
 
-  /// Sphere radius in parsecs. Chosen so total surface area matches the
-  /// old 150×110 chart (4πR² ≈ 16 500), keeping system density — and the
-  /// pacing of trade hops — the same as before.
-  static const double radius = 36.0;
+  /// Sphere radius in parsecs. Chosen so total surface area is
+  /// 4πR² ≈ 54 700 pc² at N=400 systems (~137 pc² per system) — the same
+  /// density as the original 120-system / R=36pc chart.
+  static const double radius = 66.0;
 
   /// Longitude in radians (0..2π) from a chart x coordinate.
   static double lonOf(num x) => x / 150.0 * 2 * pi;
