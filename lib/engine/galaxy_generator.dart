@@ -5,12 +5,10 @@ import '../models/enums.dart';
 import '../models/government_def.dart';
 import '../models/solar_system.dart';
 import '../models/trade_item_def.dart';
+import 'sphere.dart';
 
 class GalaxyGenerator {
-  static const int _mapWidth = 150;
-  static const int _mapHeight = 110;
   static const int _systemCount = 120;
-  static const int _minSpacing = 6;
   static const int _wormholeCount = 6;
 
   static const List<String> _systemNames = [
@@ -38,29 +36,32 @@ class GalaxyGenerator {
   static const int solIndex = 92;
 
   /// Generate a deterministic galaxy given a seed and difficulty.
+  ///
+  /// Systems are distributed on the galactic sphere via a Fibonacci
+  /// lattice (near-uniform by construction) with seeded jitter, then
+  /// stored as chart coordinates (x = longitude 0..150, y = latitude
+  /// 0..110) — see [SphereGeo].
   static List<SolarSystem> generate(int seed, DifficultyLevel difficulty) {
     final rng = Random(seed);
-    final positions = <_Point>[];
     final systems = <SolarSystem>[];
 
-    // Place systems with minimum spacing constraint.
-    int attempts = 0;
-    while (positions.length < _systemCount && attempts < 50000) {
-      attempts++;
-      final x = rng.nextInt(_mapWidth - 4) + 2;
-      final y = rng.nextInt(_mapHeight - 4) + 2;
-      if (_isFarEnough(x, y, positions)) {
-        positions.add(_Point(x, y));
-      }
-    }
-
-    // If we couldn't place all systems with strict spacing, relax slightly.
-    if (positions.length < _systemCount) {
-      while (positions.length < _systemCount) {
-        final x = rng.nextInt(_mapWidth - 4) + 2;
-        final y = rng.nextInt(_mapHeight - 4) + 2;
-        positions.add(_Point(x, y));
-      }
+    // Fibonacci sphere: i-th point at even area spacing; jitter keeps
+    // each galaxy unique without wrecking the spacing guarantee.
+    const goldenAngle = 2.39996322972865332; // π(3 − √5)
+    final spinOffset = rng.nextDouble() * 2 * pi;
+    final positions = <_Point>[];
+    for (var i = 0; i < _systemCount; i++) {
+      // Avoid exact poles: bias the endpoints inward.
+      final v = (i + 0.5) / _systemCount; // (0..1)
+      var lat = asin(1 - 2 * v); // uniform in sin(lat)
+      var lon = (i * goldenAngle + spinOffset) % (2 * pi);
+      // Jitter: up to ~35% of the lattice spacing, seeded.
+      final jitter = 0.35 * sqrt(4 * pi / _systemCount);
+      lat = (lat + (rng.nextDouble() - 0.5) * jitter)
+          .clamp(-pi / 2 * 0.98, pi / 2 * 0.98);
+      lon = (lon + (rng.nextDouble() - 0.5) * jitter) % (2 * pi);
+      final (cx, cy) = SphereGeo.chartOf(lon, lat);
+      positions.add(_Point(cx.round().clamp(0, 149), cy.round().clamp(1, 109)));
     }
 
     // Build systems using the shuffled name list (names are already indexed).
@@ -123,15 +124,6 @@ class GalaxyGenerator {
     }
 
     return updated;
-  }
-
-  static bool _isFarEnough(int x, int y, List<_Point> existing) {
-    for (final p in existing) {
-      final dx = x - p.x;
-      final dy = y - p.y;
-      if (dx * dx + dy * dy < _minSpacing * _minSpacing) return false;
-    }
-    return true;
   }
 
   /// Lower tech levels are more common: weighted toward 0-3.

@@ -7,12 +7,13 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../engine/sphere.dart';
 import '../engine/travel.dart';
 import '../models/enums.dart';
 import '../models/game_state.dart';
 import '../models/solar_system.dart';
 import '../providers/game_provider.dart';
-import '../ui/starmap_camera.dart';
+import '../ui/globe_camera.dart';
 
 class GalaxyMapScreen extends ConsumerStatefulWidget {
   const GalaxyMapScreen({super.key});
@@ -29,21 +30,25 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen>
   final ValueNotifier<double> _time = ValueNotifier(0);
   Duration _lastTick = Duration.zero;
 
-  final StarMapCamera _camera =
-      StarMapCamera(targetX: 75, targetZ: 55, zoom: 4);
-  static const double _maxZoom = 16.0;
+  final GlobeCamera _camera =
+      GlobeCamera(yaw: 0, pitch: 0, radiusPx: 300);
 
   // Fly-to animation.
-  StarMapCamera? _flyFrom;
-  StarMapCamera? _flyTo;
+  GlobeCamera? _flyFrom;
+  GlobeCamera? _flyTo;
   double _flyT = 1.0;
 
   // Gesture state.
   Offset _lastFocal = Offset.zero;
   double _lastScale = 1.0;
-  Offset _inertia = Offset.zero;
+  Offset _spin = Offset.zero; // angular inertia, screen px/s
 
   bool _initialised = false;
+
+  double get _fitRadius =>
+      0.42 * min(_camera.viewport.width, _camera.viewport.height);
+  double get _maxRadius =>
+      2.4 * min(_camera.viewport.width, _camera.viewport.height);
 
   @override
   void initState() {
@@ -64,47 +69,55 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen>
         : (elapsed - _lastTick).inMicroseconds / 1e6;
     _lastTick = elapsed;
 
-    // Fly-to animation.
     if (_flyT < 1.0 && _flyFrom != null && _flyTo != null) {
       _flyT = min(1.0, _flyT + dt / 0.7);
       final eased = Curves.easeInOutCubic.transform(_flyT);
-      final pose = lerpCamera(_flyFrom!, _flyTo!, eased);
+      final pose = lerpGlobe(_flyFrom!, _flyTo!, eased);
       _camera
-        ..targetX = pose.targetX
-        ..targetZ = pose.targetZ
-        ..zoom = pose.zoom;
+        ..yaw = pose.yaw
+        ..pitch = pose.pitch
+        ..radiusPx = pose.radiusPx;
     }
 
-    // Pan inertia: flick and glide.
-    if (_inertia.distance > 12) {
-      _camera.panScreen(_inertia * dt);
-      _inertia *= exp(-3.5 * dt);
+    // Spin inertia: flick the globe and it keeps turning.
+    if (_spin.distance > 10) {
+      _camera.dragBy(_spin * dt);
+      _spin *= exp(-2.8 * dt);
     }
 
-    // Drives twinkle, pulses, reticle spin, and any camera motion.
     _time.value = elapsed.inMicroseconds / 1e6;
   }
 
-  void _flyToPose(double tx, double tz, double zoom) {
+  void _flyToPose(double yaw, double pitch, double radiusPx) {
     _flyFrom = _camera.copy();
-    _flyTo = StarMapCamera(targetX: tx, targetZ: tz, zoom: zoom)
-      ..viewport = _camera.viewport;
+    _flyTo = GlobeCamera(
+      yaw: yaw,
+      pitch: pitch,
+      radiusPx: radiusPx.clamp(_fitRadius, _maxRadius),
+    )..viewport = _camera.viewport;
     _flyT = 0.0;
-    _inertia = Offset.zero;
+    _spin = Offset.zero;
+  }
+
+  void _flyToSystem(GameState game, int index, {double? radiusPx}) {
+    final sys = game.solarSystems[index];
+    final (yaw, pitch) = GlobeCamera.faceAngles(sys.x, sys.y);
+    _flyToPose(yaw, pitch, radiusPx ?? _camera.radiusPx);
   }
 
   void _focusRange(GameState game) {
-    final sys = game.solarSystems[game.currentSystemIndex];
-    final rangePc = max(6.0, Travel.maxRange(game.ship));
+    final rangePc = max(4.0, Travel.maxRange(game.ship));
+    final alpha = min(pi * 0.9, rangePc / SphereGeo.radius);
     final shortest =
         min(_camera.viewport.width, _camera.viewport.height);
-    final zoom = (shortest / (rangePc * 2.6))
-        .clamp(_camera.fitZoom(), _maxZoom)
-        .toDouble();
-    _flyToPose(sys.x.toDouble(), sys.y.toDouble(), zoom);
+    final radiusPx = shortest / (2.5 * sin(min(alpha, pi / 2)));
+    final sys = game.solarSystems[game.currentSystemIndex];
+    final (yaw, pitch) = GlobeCamera.faceAngles(sys.x, sys.y);
+    _flyToPose(yaw, pitch, radiusPx);
   }
 
-  void _showFullGalaxy() => _flyToPose(75, 55, _camera.fitZoom());
+  void _showFullGalaxy() =>
+      _flyToPose(_camera.yaw, _camera.pitch, _fitRadius);
 
   int? _wormholeTarget(GameState game) {
     final here = game.currentSystem;
@@ -121,8 +134,9 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen>
     double closestDist = double.infinity;
     for (int i = 0; i < game.solarSystems.length; i++) {
       final sys = game.solarSystems[i];
-      final p = _camera.project(sys.x.toDouble(), sys.y.toDouble());
-      final d = (p - details.localPosition).distance;
+      final p = _camera.projectChart(sys.x, sys.y);
+      if (!p.front) continue; // only the visible hemisphere is tappable
+      final d = (p.screen - details.localPosition).distance;
       if (d < closestDist && d < hitRadiusPx) {
         closestDist = d;
         closest = i;
@@ -132,9 +146,47 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen>
     if (closest != null && closest != game.currentSystemIndex) {
       HapticFeedback.selectionClick();
       setState(() => _selectedIndex = closest);
-    } else {
-      setState(() => _selectedIndex = null);
+      return;
     }
+
+    // Limb markers: tapping a far-side point of interest spins to it.
+    for (final poi in _farSidePois(game)) {
+      final marker = _limbMarkerPos(poi.$2);
+      if (marker != null &&
+          (marker - details.localPosition).distance < 24) {
+        HapticFeedback.selectionClick();
+        _flyToSystem(game, poi.$1);
+        return;
+      }
+    }
+
+    setState(() => _selectedIndex = null);
+  }
+
+  /// Far-side points of interest: (index, projected point, color, label).
+  List<(int, GlobePoint, Color, String)> _farSidePois(GameState game) {
+    final pois = <(int, GlobePoint, Color, String)>[];
+    void add(int? idx, Color color, String label) {
+      if (idx == null) return;
+      final sys = game.solarSystems[idx];
+      final p = _camera.projectChart(sys.x, sys.y);
+      if (!p.front) pois.add((idx, p, color, label));
+    }
+
+    add(game.currentSystemIndex, Theme.of(context).colorScheme.primary,
+        'YOU');
+    add(game.activeQuest?.targetSystemIndex, const Color(0xFFfacc15),
+        'CONTRACT');
+    add(_wormholeTarget(game), const Color(0xFFa78bfa), 'WORMHOLE');
+    add(_selectedIndex, Theme.of(context).colorScheme.secondary, '');
+    return pois;
+  }
+
+  Offset? _limbMarkerPos(GlobePoint p) {
+    final rel = p.screen - _camera.center;
+    if (rel.distance < 1) return null;
+    final dir = rel / rel.distance;
+    return _camera.center + dir * (_camera.radiusPx + 16);
   }
 
   @override
@@ -151,7 +203,7 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen>
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('GALAXY MAP'),
+        title: const Text('GALAXY'),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => context.go('/game'),
@@ -178,11 +230,14 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen>
                     Size(constraints.maxWidth, constraints.maxHeight);
                 if (!_initialised) {
                   _initialised = true;
-                  // Open on the whole galaxy, then glide into warp range.
+                  final sys =
+                      game.solarSystems[game.currentSystemIndex];
+                  final (yaw, pitch) =
+                      GlobeCamera.faceAngles(sys.x, sys.y);
                   _camera
-                    ..targetX = 75
-                    ..targetZ = 55
-                    ..zoom = _camera.fitZoom();
+                    ..yaw = yaw
+                    ..pitch = pitch
+                    ..radiusPx = _fitRadius;
                   WidgetsBinding.instance
                       .addPostFrameCallback((_) => _focusRange(game));
                 }
@@ -191,36 +246,37 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen>
                     if (signal is PointerScrollEvent) {
                       final factor =
                           signal.scrollDelta.dy > 0 ? 0.88 : 1.14;
-                      _camera.zoomAt(signal.localPosition, factor,
-                          _camera.fitZoom(), _maxZoom);
+                      _camera.radiusPx = (_camera.radiusPx * factor)
+                          .clamp(_fitRadius, _maxRadius);
                     }
                   },
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
                     onTapUp: (d) => _handleTap(d, game),
                     onScaleStart: (d) {
-                      _flyT = 1.0; // interrupt any fly-to
-                      _inertia = Offset.zero;
+                      _flyT = 1.0;
+                      _spin = Offset.zero;
                       _lastFocal = d.localFocalPoint;
                       _lastScale = 1.0;
                     },
                     onScaleUpdate: (d) {
-                      _camera.panScreen(d.localFocalPoint - _lastFocal);
+                      _camera.dragBy(d.localFocalPoint - _lastFocal);
                       if (d.scale != _lastScale && _lastScale > 0) {
-                        _camera.zoomAt(d.localFocalPoint,
-                            d.scale / _lastScale, _camera.fitZoom(), _maxZoom);
+                        _camera.radiusPx =
+                            (_camera.radiusPx * d.scale / _lastScale)
+                                .clamp(_fitRadius, _maxRadius);
                       }
                       _lastFocal = d.localFocalPoint;
                       _lastScale = d.scale;
                     },
                     onScaleEnd: (d) {
-                      _inertia = d.velocity.pixelsPerSecond;
+                      _spin = d.velocity.pixelsPerSecond;
                     },
                     child: Stack(
                       children: [
                         CustomPaint(
                           size: _camera.viewport,
-                          painter: StarMapPainter(
+                          painter: GlobePainter(
                             repaint: _time,
                             time: _time,
                             camera: _camera,
@@ -253,8 +309,8 @@ class _GalaxyMapScreenState extends ConsumerState<GalaxyMapScreen>
                               const SizedBox(height: 8),
                               IconButton.filledTonal(
                                 icon:
-                                    const Icon(Icons.zoom_out_map, size: 20),
-                                tooltip: 'Full galaxy',
+                                    const Icon(Icons.public, size: 20),
+                                tooltip: 'Whole globe',
                                 onPressed: _showFullGalaxy,
                               ),
                             ],
@@ -346,9 +402,9 @@ class _MapLegend extends StatelessWidget {
   }
 }
 
-class StarMapPainter extends CustomPainter {
+class GlobePainter extends CustomPainter {
   final ValueNotifier<double> time;
-  final StarMapCamera camera;
+  final GlobeCamera camera;
   final List<SolarSystem> systems;
   final int currentIndex;
   final int? selectedIndex;
@@ -363,7 +419,7 @@ class StarMapPainter extends CustomPainter {
   List<Offset>? _dustNear;
   List<Offset>? _dustFar;
 
-  StarMapPainter({
+  GlobePainter({
     required Listenable repaint,
     required this.time,
     required this.camera,
@@ -382,7 +438,6 @@ class StarMapPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final t = time.value;
 
-    // --- deep space backdrop ---
     canvas.drawRect(
       Offset.zero & size,
       Paint()
@@ -394,161 +449,223 @@ class StarMapPainter extends CustomPainter {
     );
 
     _paintDust(canvas, size, t);
-    _paintNebulae(canvas);
-    _paintGrid(canvas, size);
-    _paintRange(canvas);
+    _paintGlobeBody(canvas);
+    _paintGraticule(canvas);
     _paintWormholeLinks(canvas);
+    _paintRangeCap(canvas);
     _paintSystems(canvas, size, t);
+    _paintLimbMarkers(canvas, t);
     _paintVignette(canvas, size);
   }
 
-  // Parallax star dust: two layers moving at different fractions of the
-  // camera, which is what sells the depth.
   void _paintDust(Canvas canvas, Size size, double t) {
-    _dustFar ??= _makeDust(galaxySeed ^ 0xD05, 90);
-    _dustNear ??= _makeDust(galaxySeed ^ 0xD06, 55);
+    _dustFar ??= _makeDust(galaxySeed ^ 0xD05, 90, size);
+    _dustNear ??= _makeDust(galaxySeed ^ 0xD06, 55, size);
 
     void layer(List<Offset> pts, double parallax, double maxR, double alpha) {
       final paint = Paint();
+      final shift = Offset(camera.yaw * 60, camera.pitch * 90) * parallax;
       for (var i = 0; i < pts.length; i++) {
-        final pt = pts[i];
-        final sx = size.width / 2 +
-            (pt.dx - camera.targetX) * camera.zoom * parallax;
-        final sy = size.height / 2 +
-            (pt.dy - camera.targetZ) * camera.zoom * parallax * 0.64;
-        // Wrap into view so dust is endless.
-        final wx = (sx % (size.width + 40)) - 20;
-        final wy = (sy % (size.height + 40)) - 20;
+        final base = pts[i] - shift;
+        final wx = (base.dx % (size.width + 40)) - 20;
+        final wy = (base.dy % (size.height + 40)) - 20;
         final twinkle =
             0.6 + 0.4 * sin(t * (0.6 + (i % 7) * 0.13) + i * 1.7);
         paint.color = Colors.white.withOpacity(alpha * twinkle);
-        canvas.drawCircle(Offset(wx, wy), maxR * (0.5 + (i % 3) * 0.25), paint);
+        canvas.drawCircle(
+            Offset(wx, wy), maxR * (0.5 + (i % 3) * 0.25), paint);
       }
     }
 
-    layer(_dustFar!, 0.22, 0.9, 0.20);
-    layer(_dustNear!, 0.45, 1.3, 0.30);
+    layer(_dustFar!, 0.35, 0.9, 0.20);
+    layer(_dustNear!, 0.7, 1.3, 0.28);
   }
 
-  List<Offset> _makeDust(int seed, int count) {
+  List<Offset> _makeDust(int seed, int count, Size size) {
     final rng = Random(seed);
     return List.generate(
         count,
-        (_) => Offset(
-            rng.nextDouble() * 400 - 125, rng.nextDouble() * 300 - 95));
+        (_) => Offset(rng.nextDouble() * (size.width + 40),
+            rng.nextDouble() * (size.height + 40)));
   }
 
-  void _paintNebulae(Canvas canvas) {
-    const blobs = [
-      (30.0, 30.0, 42.0, Color(0xFF12244d)),
-      (105.0, 68.0, 55.0, Color(0xFF0d2038)),
-      (70.0, 18.0, 34.0, Color(0xFF1b1440)),
-      (128.0, 92.0, 38.0, Color(0xFF0e2a33)),
-      (18.0, 88.0, 36.0, Color(0xFF241036)),
-    ];
-    for (final (wx, wz, r, color) in blobs) {
-      final center = camera.project(wx, wz);
-      final p = camera.perspectiveAt(wz);
-      final radius = r * camera.zoom * p;
-      canvas.drawCircle(
-        center,
-        radius,
-        Paint()
-          ..shader = RadialGradient(colors: [
-            color.withOpacity(0.32),
-            color.withOpacity(0.0),
-          ]).createShader(
-              Rect.fromCircle(center: center, radius: radius)),
-      );
-    }
+  void _paintGlobeBody(Canvas canvas) {
+    final c = camera.center;
+    final r = camera.radiusPx;
+    // Dark glass sphere with an off-center inner glow.
+    canvas.drawCircle(
+      c,
+      r,
+      Paint()
+        ..shader = RadialGradient(
+          center: const Alignment(-0.25, -0.3),
+          radius: 1.1,
+          colors: const [
+            Color(0xFF11203a),
+            Color(0xFF0a1226),
+            Color(0xFF050912),
+          ],
+          stops: const [0.0, 0.55, 1.0],
+        ).createShader(Rect.fromCircle(center: c, radius: r)),
+    );
+    // Limb glow.
+    canvas.drawCircle(
+      c,
+      r,
+      Paint()
+        ..color = cs.primary.withOpacity(0.35)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4,
+    );
+    canvas.drawCircle(
+      c,
+      r + 5,
+      Paint()
+        ..shader = RadialGradient(
+          colors: [
+            cs.primary.withOpacity(0.0),
+            cs.primary.withOpacity(0.10),
+            cs.primary.withOpacity(0.0),
+          ],
+          stops: const [0.9, 0.965, 1.0],
+        ).createShader(Rect.fromCircle(center: c, radius: r + 5)),
+    );
   }
 
-  void _paintGrid(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = const Color(0xFF35507a).withOpacity(0.14)
+  void _paintGraticule(Canvas canvas) {
+    final front = Paint()
+      ..color = const Color(0xFF3b5b8c).withOpacity(0.20)
+      ..style = PaintingStyle.stroke
       ..strokeWidth = 1.0;
-    const step = 15.0;
-    // Verticals.
-    for (double x = 0; x <= 150; x += step) {
-      final path = Path()..moveTo0(camera.project(x, 0));
-      for (double z = 5; z <= 110; z += 5) {
-        path.lineTo0(camera.project(x, z));
-      }
-      canvas.drawPath(path, paint..style = PaintingStyle.stroke);
-    }
-    // Horizontals.
-    for (double z = 0; z <= 110; z += step) {
-      final a = camera.project(0, z);
-      final b = camera.project(150, z);
-      canvas.drawLine(a, b, paint);
-    }
-  }
+    final back = Paint()
+      ..color = const Color(0xFF3b5b8c).withOpacity(0.06)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.0;
 
-  void _paintRange(Canvas canvas) {
-    if (rangeParsecs <= 0) return;
-    final sys = systems[currentIndex];
-    final path = Path();
-    for (var i = 0; i <= 64; i++) {
-      final a = i / 64 * 2 * pi;
-      final p = camera.project(
-          sys.x + cos(a) * rangeParsecs, sys.y + sin(a) * rangeParsecs);
-      if (i == 0) {
-        path.moveTo(p.dx, p.dy);
-      } else {
-        path.lineTo(p.dx, p.dy);
+    void polyline(List<(double, double, double)> units) {
+      Path? path;
+      var pathFront = true;
+      GlobePoint? prev;
+      for (final (ux, uy, uz) in units) {
+        final p = camera.projectUnit(ux, uy, uz);
+        if (prev != null && (p.front == prev.front)) {
+          if (path == null) {
+            path = Path()..moveTo(prev.screen.dx, prev.screen.dy);
+            pathFront = p.front;
+          }
+          path.lineTo(p.screen.dx, p.screen.dy);
+        } else if (path != null) {
+          canvas.drawPath(path, pathFront ? front : back);
+          path = null;
+        }
+        prev = p;
       }
+      if (path != null) canvas.drawPath(path, pathFront ? front : back);
     }
-    path.close();
-    canvas.drawPath(
-        path,
-        Paint()
-          ..color = cs.primary.withOpacity(0.05)
-          ..style = PaintingStyle.fill);
-    canvas.drawPath(
-        path,
-        Paint()
-          ..color = cs.primary.withOpacity(0.38)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.2);
+
+    // Latitude rings.
+    for (var latDeg = -60; latDeg <= 60; latDeg += 30) {
+      final lat = latDeg * pi / 180;
+      polyline([
+        for (var i = 0; i <= 72; i++)
+          (
+            cos(lat) * cos(i / 72 * 2 * pi),
+            sin(lat),
+            cos(lat) * sin(i / 72 * 2 * pi)
+          )
+      ]);
+    }
+    // Meridians.
+    for (var lonDeg = 0; lonDeg < 360; lonDeg += 30) {
+      final lon = lonDeg * pi / 180;
+      polyline([
+        for (var i = 0; i <= 48; i++)
+          (
+            cos((i / 48 - 0.5) * pi) * cos(lon),
+            sin((i / 48 - 0.5) * pi),
+            cos((i / 48 - 0.5) * pi) * sin(lon)
+          )
+      ]);
+    }
   }
 
   void _paintWormholeLinks(Canvas canvas) {
-    final paint = Paint()
-      ..color = const Color(0xFF7c3aed).withOpacity(0.45)
-      ..strokeWidth = 1.2
-      ..style = PaintingStyle.stroke;
     for (int i = 0; i < systems.length; i++) {
       final ev = systems[i].specialEvent;
       if (ev != null && ev >= 1000 && ev - 1000 < systems.length) {
         final j = ev - 1000;
         if (j > i) {
-          _dashedLine(
-              canvas,
-              camera.project(
-                  systems[i].x.toDouble(), systems[i].y.toDouble()),
-              camera.project(
-                  systems[j].x.toDouble(), systems[j].y.toDouble()),
-              paint);
+          final a = camera.projectChart(systems[i].x, systems[i].y);
+          final b = camera.projectChart(systems[j].x, systems[j].y);
+          final throughGlass = !a.front || !b.front;
+          final paint = Paint()
+            ..color = const Color(0xFF7c3aed)
+                .withOpacity(throughGlass ? 0.22 : 0.5)
+            ..strokeWidth = 1.2
+            ..style = PaintingStyle.stroke;
+          _dashedLine(canvas, a.screen, b.screen, paint);
         }
       }
     }
   }
 
-  void _paintSystems(Canvas canvas, Size size, double t) {
-    // Draw far-to-near so nearer stars overlap distant ones.
-    final order = List<int>.generate(systems.length, (i) => i)
-      ..sort((a, b) => systems[a].y.compareTo(systems[b].y));
+  void _paintRangeCap(Canvas canvas) {
+    if (rangeParsecs <= 0) return;
+    final alpha = min(pi * 0.98, rangeParsecs / SphereGeo.radius);
+    final sys = systems[currentIndex];
+    final (nx, ny, nz) = SphereGeo.unitOf(sys.x, sys.y);
+    // Tangent basis at the current system.
+    var (e1x, e1y, e1z) = (-ny * nx, 1 - ny * ny, -ny * nz);
+    final e1len = sqrt(e1x * e1x + e1y * e1y + e1z * e1z);
+    if (e1len < 1e-6) {
+      (e1x, e1y, e1z) = (1.0, 0.0, 0.0);
+    } else {
+      e1x /= e1len;
+      e1y /= e1len;
+      e1z /= e1len;
+    }
+    final (e2x, e2y, e2z) = (
+      ny * e1z - nz * e1y,
+      nz * e1x - nx * e1z,
+      nx * e1y - ny * e1x,
+    );
 
-    for (final i in order) {
-      final sys = systems[i];
-      final pos = camera.project(sys.x.toDouble(), sys.y.toDouble());
-      if (pos.dx < -60 ||
-          pos.dx > size.width + 60 ||
-          pos.dy < -60 ||
-          pos.dy > size.height + 60) {
-        continue;
+    final ca = cos(alpha), sa = sin(alpha);
+    final paintFront = Paint()
+      ..color = cs.primary.withOpacity(0.45)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.3;
+    final paintBack = Paint()
+      ..color = cs.primary.withOpacity(0.10)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.0;
+
+    GlobePoint? prev;
+    for (var i = 0; i <= 72; i++) {
+      final th = i / 72 * 2 * pi;
+      final px = ca * nx + sa * (cos(th) * e1x + sin(th) * e2x);
+      final py = ca * ny + sa * (cos(th) * e1y + sin(th) * e2y);
+      final pz = ca * nz + sa * (cos(th) * e1z + sin(th) * e2z);
+      final p = camera.projectUnit(px, py, pz);
+      if (prev != null) {
+        canvas.drawLine(prev.screen, p.screen,
+            (p.front && prev.front) ? paintFront : paintBack);
       }
-      final persp = camera.perspectiveAt(sys.y.toDouble());
+      prev = p;
+    }
+  }
+
+  void _paintSystems(Canvas canvas, Size size, double t) {
+    final projected = <(int, GlobePoint)>[];
+    for (var i = 0; i < systems.length; i++) {
+      projected.add((i, camera.projectChart(systems[i].x, systems[i].y)));
+    }
+    // Painter's algorithm: deepest first.
+    projected.sort((a, b) => a.$2.z.compareTo(b.$2.z));
+
+    for (final (i, p) in projected) {
+      final sys = systems[i];
+      final pos = p.screen;
       final isCurrent = i == currentIndex;
       final isSelected = i == selectedIndex;
       final isReachable = reachableIndices.contains(i);
@@ -557,19 +674,28 @@ class StarMapPainter extends CustomPainter {
 
       final threat = threatLevel(sys);
       final baseColor = isCurrent ? cs.primary : threatColor(threat);
-      final dimmed = !isCurrent && !isReachable && !isWormholeExit;
 
-      final sizeScale = camera.zoom * persp;
+      if (!p.front) {
+        // Ghosts through the glass — enough to sense the far side.
+        canvas.drawCircle(
+            pos,
+            1.6,
+            Paint()
+              ..color = baseColor.withOpacity(0.13 * p.scale.clamp(0.5, 1)));
+        continue;
+      }
+
+      final dimmed = !isCurrent && !isReachable && !isWormholeExit;
       final twinkle = 1.0 + 0.1 * sin(t * 1.8 + i * 2.3);
       var r = (1.0 + (sys.size - 1) * 0.35) *
-          (sizeScale * 0.42).clamp(1.6, 5.2) *
+          (camera.radiusPx / 110).clamp(1.7, 5.4) *
+          p.scale *
           twinkle;
-      if (dimmed) r *= 0.75;
+      if (dimmed) r *= 0.72;
 
-      final alpha = dimmed ? (sys.visited ? 0.45 : 0.28) : 1.0;
+      final alpha = dimmed ? (sys.visited ? 0.45 : 0.30) : 1.0;
       final color = baseColor.withOpacity(alpha);
 
-      // Halo glow.
       final haloR = r * (dimmed ? 2.2 : 3.4);
       canvas.drawCircle(
         pos,
@@ -580,19 +706,16 @@ class StarMapPainter extends CustomPainter {
             color.withOpacity(0.0),
           ]).createShader(Rect.fromCircle(center: pos, radius: haloR)),
       );
-      // Core.
       canvas.drawCircle(pos, r, Paint()..color = color);
       canvas.drawCircle(
           pos, r * 0.45, Paint()..color = Colors.white.withOpacity(alpha));
 
-      // Current system: expanding pulse rings.
       if (isCurrent) {
         for (var k = 0; k < 2; k++) {
           final phase = ((t * 0.6 + k * 0.5) % 1.0);
-          final pr = r + 4 + phase * 16;
           canvas.drawCircle(
               pos,
-              pr,
+              r + 4 + phase * 16,
               Paint()
                 ..color = cs.primary.withOpacity(0.5 * (1 - phase))
                 ..style = PaintingStyle.stroke
@@ -600,7 +723,6 @@ class StarMapPainter extends CustomPainter {
         }
       }
 
-      // Wormhole exit: steady violet ring.
       if (isWormholeExit) {
         canvas.drawCircle(
             pos,
@@ -611,7 +733,6 @@ class StarMapPainter extends CustomPainter {
               ..strokeWidth = 1.5);
       }
 
-      // Quest target: pulsing gold diamond beacon.
       if (isQuestTarget) {
         final pulse = 1.0 + 0.15 * sin(t * 3.0);
         final d = (r + 7) * pulse;
@@ -629,7 +750,6 @@ class StarMapPainter extends CustomPainter {
               ..strokeWidth = 1.6);
       }
 
-      // Selection reticle: two counter-rotating arcs.
       if (isSelected) {
         final rr = r + 9;
         final rect = Rect.fromCircle(center: pos, radius: rr);
@@ -647,13 +767,12 @@ class StarMapPainter extends CustomPainter {
         canvas.drawArc(rect2, -t * 1.1 + pi, sweep * 0.6, false, reticle);
       }
 
-      // Labels: current/selected/quest always; in-range and wormhole when
-      // there's room; visited majors only when zoomed in.
+      final labelBudget = camera.radiusPx;
       final showLabel = isCurrent ||
           isSelected ||
           isQuestTarget ||
-          ((isReachable || isWormholeExit) && sizeScale > 3.0) ||
-          (sys.visited && sys.size >= 3 && sizeScale > 7.0);
+          ((isReachable || isWormholeExit) && labelBudget > 210) ||
+          (sys.visited && sys.size >= 3 && labelBudget > 520);
       if (showLabel) {
         final labelColor = isCurrent
             ? cs.primary
@@ -670,6 +789,42 @@ class StarMapPainter extends CustomPainter {
         tp.paint(canvas, pos + Offset(r + 7, -tp.height / 2));
       }
     }
+  }
+
+  void _paintLimbMarkers(Canvas canvas, double t) {
+    void marker(int? idx, Color color, String label) {
+      if (idx == null) return;
+      final p = camera.projectChart(systems[idx].x, systems[idx].y);
+      if (p.front) return;
+      final rel = p.screen - camera.center;
+      if (rel.distance < 1) return;
+      final dir = rel / rel.distance;
+      final pos = camera.center + dir * (camera.radiusPx + 16);
+      final pulse = 0.75 + 0.25 * sin(t * 2.5);
+
+      // Chevron pointing outward: "it's around the back, this way".
+      final perp = Offset(-dir.dy, dir.dx);
+      final tip = pos + dir * 7;
+      final path = Path()
+        ..moveTo(tip.dx, tip.dy)
+        ..lineTo(pos.dx + perp.dx * 5 - dir.dx * 3,
+            pos.dy + perp.dy * 5 - dir.dy * 3)
+        ..lineTo(pos.dx - perp.dx * 5 - dir.dx * 3,
+            pos.dy - perp.dy * 5 - dir.dy * 3)
+        ..close();
+      canvas.drawPath(path, Paint()..color = color.withOpacity(pulse));
+      if (label.isNotEmpty) {
+        final tp = _label(label, color.withOpacity(0.9), 8, bold: true);
+        final labelPos = pos + dir * 10;
+        tp.paint(canvas,
+            labelPos - Offset(tp.width / 2, tp.height / 2) + dir * 8);
+      }
+    }
+
+    marker(currentIndex, cs.primary, 'YOU');
+    marker(questTargetIndex, const Color(0xFFfacc15), 'CONTRACT');
+    marker(wormholeTargetIndex, const Color(0xFFa78bfa), '');
+    marker(selectedIndex, cs.secondary, '');
   }
 
   TextPainter _label(String text, Color color, double size,
@@ -730,12 +885,7 @@ class StarMapPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(StarMapPainter old) => true;
-}
-
-extension on Path {
-  void moveTo0(Offset p) => moveTo(p.dx, p.dy);
-  void lineTo0(Offset p) => lineTo(p.dx, p.dy);
+  bool shouldRepaint(GlobePainter old) => true;
 }
 
 class _SystemInfoCard extends StatelessWidget {

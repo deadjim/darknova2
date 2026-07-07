@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:darknova2/engine/economy.dart';
 import 'package:darknova2/engine/galaxy_generator.dart';
 import 'package:darknova2/engine/game_engine.dart';
+import 'package:darknova2/engine/sphere.dart';
 import 'package:darknova2/engine/travel.dart';
 import 'package:darknova2/models/commander.dart';
 import 'package:darknova2/models/enums.dart';
@@ -295,13 +296,14 @@ void main() {
         countdown: 5,
         visited: false,
       );
+      // Antipode of Alpha on the galactic sphere: lon + π, lat negated.
       c = SolarSystem(
         name: 'Gamma',
         techLevel: 5,
         government: GovernmentType.democracy,
         status: SystemStatus.uneventful,
-        x: 200,
-        y: 200,
+        x: 85,
+        y: 100,
         specialResource: SpecialResource.nothingSpecial,
         size: 3,
         tradeQuantities: {},
@@ -311,13 +313,17 @@ void main() {
       ship = Ship.starter();
     });
 
-    test('distance is Euclidean', () {
+    test('distance is great-circle on the galactic sphere', () {
+      // Same latitude, Δlon = 6/150·2π; hand-computed geodesic ≈ 2.54 pc.
       final d = Travel.distance(a, b);
-      expect(d, closeTo(6.0, 0.01));
+      expect(d, closeTo(2.54, 0.05));
+      // The antipode is exactly half a circumference away.
+      expect(Travel.distance(a, c), closeTo(pi * SphereGeo.radius, 0.5));
     });
 
     test('distance to self is zero', () {
-      expect(Travel.distance(a, a), equals(0.0));
+      // acos(dot ≈ 1.0) carries sub-microparsec float noise.
+      expect(Travel.distance(a, a), closeTo(0.0, 1e-4));
     });
 
     test('distance is symmetric', () {

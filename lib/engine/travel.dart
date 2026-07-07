@@ -6,15 +6,16 @@ import '../models/game_state.dart';
 import '../models/ship.dart';
 import '../models/solar_system.dart';
 import 'economy.dart';
+import 'sphere.dart';
 
 class Travel {
   Travel._();
 
-  /// Euclidean distance between two systems.
+  /// Distance between two systems in parsecs — great-circle distance on
+  /// the galactic sphere. Every distance-consuming rule (fuel, quests,
+  /// news falloff) flows through here.
   static double distance(SolarSystem a, SolarSystem b) {
-    final dx = (a.x - b.x).toDouble();
-    final dy = (a.y - b.y).toDouble();
-    return sqrt(dx * dx + dy * dy);
+    return SphereGeo.distance(a, b);
   }
 
   /// Fuel cost to travel from one system to another.
