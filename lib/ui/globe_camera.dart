@@ -91,10 +91,12 @@ class GlobeCamera {
     );
   }
 
-  /// Spin the globe by a screen-space drag — grabbing the surface.
+  /// Spin the globe by a screen-space drag — grabbing the surface, so the
+  /// star under your finger follows your finger. For front-hemisphere
+  /// points, ∂screenX/∂yaw > 0 and ∂screenY/∂pitch > 0, hence +=.
   void dragBy(Offset delta) {
-    yaw -= delta.dx / radiusPx;
-    pitch -= delta.dy / radiusPx;
+    yaw += delta.dx / radiusPx;
+    pitch += delta.dy / radiusPx;
     pitch = pitch.clamp(-maxPitch, maxPitch);
     yaw = _wrapAngle(yaw);
   }
