@@ -61,8 +61,13 @@ Why this beats both MMO and my safer v1 draft:
 
 - Linked season games get **50 warp-turns per real day**, accruing
   continuously (≈1 per 29 min), banked up to **150**. Warping costs 1
-  turn (wormhole transit too — free fuel, not free time). Everything
-  else (trading, combat rounds, boards, shipyard) is turn-free.
+  turn (wormhole transit too — free fuel, not free time). Scanning a
+  system for parked ships costs 1 turn; committing a raid costs 3
+  (§Raids). Everything else (trading, combat rounds, boards, shipyard)
+  is turn-free.
+- New commanders start with a **100-turn signing bonus** — onboarding
+  is never rationed. The turn counter lives in the app bar next to
+  fuel whenever linked.
 - Out of turns = you can still dock, trade, read boards, fight if
   attacked — you just can't warp. Sessions stay meaningful at any
   length; no-lifing buys breadth, not safety.
@@ -82,15 +87,18 @@ is *parked* wherever you left it.
 |---|---|---|
 | **Docked, core** | system threat tier SAFE | Unraidable. Police jump any attacker (attacker fights the *police fleet* first, eats a −30 record hit and sector-wide news). |
 | **Docked, contested/hostile** | — | Raidable, but station defenses add +2 effective fighter skill and attacker pays a docking-assault news event (always witnessed — stations have cameras). |
-| **Cloaked drift** | Cloaking Device gadget | Hidden from scans: 85% undetectable per scan attempt (attacker scanner gadget improves odds). Found = normal fight, no station bonus. |
+| **Cloaked drift** | Cloaking Device gadget | Hidden from scans: 15% detection per sweep (30% if the attacker has a Scanner-class gadget). Each failed sweep has a 20% chance the cloaked owner is notified "something swept the system" — counter-intelligence is content. Found = normal fight, no station bonus. |
 | **Anomaly shelter** | park in a nebula-anomaly system (each region has ~1; discoverable, marked on map once visited) | Undetectable, period. But anomaly systems have no market/shipyard and entering/leaving costs +1 turn — safety is a detour. |
 | **Open berth** | — (the default if you just close the app in space) | Fully scannable. Don't sleep in the open on the frontier. |
 
 ### Raids: attacking an offline ship
 
-- Attacker must be in the same system, spend a scan (and beat cloak
-  odds if any), then commit to the assault — **no take-backs, and the
-  raid consumes 3 turns** (scouting, positioning, the fight).
+- Attacker must be in the same system, spend a **1-turn scan** (and
+  beat cloak odds if any), then commit to the assault — **no
+  take-backs, and the raid consumes 3 further turns** (positioning,
+  the fight, the getaway). A serious hunting trip — travel, sweeps,
+  one or two assaults — runs 8–15 turns: hunting is a profession, not
+  spam, and a full-time hunter tops out around 4 attempts a day.
 - Combat resolves **server-side** with the existing engine
   (`Combat.attack` loop): defender fights back automatically using
   their real build and skills, plus posture bonuses. Seeded dice; the
@@ -192,22 +200,44 @@ for friendly seasons; tighten later if it matters.
 | 4 | Market pressure, golden contracts, leaderboards, season chronicle (LLM) | |
 | 5 (future) | Live duels, convoys, corp/guild structures, player stations with citadel-style defenses | TW2002 citadels, one day |
 
-## Open questions for our review
+## Decisions (resolved 2026-07-08, Shon delegated judgment)
 
-1. **Turn budget**: 50/day banked to 150 — feel right? (TW2002 ran
-   150–250 but its turns were cheaper actions.)
-2. **Offline-death severity**: v2 says never permadeath (rescue Flea at
-   worst). TW2002 was crueler. Keep the floor, or is losing an
-   uninsured Wasp not scary enough for you?
-3. **Raid turn cost** (3) and cloak odds (85%) are dials I made up —
-   playtest and tune, or reason harder now?
-4. **Anonymous wall posts**: keep, or does every post being signed make
-   better society? (My lean: keep anonymity, it's the bathroom wall.)
-5. **Defender AI policy default**: fight / flee-at-50% / surrender —
-   I'd default to flee-at-50%.
-6. **Solo-income plausibility bounds**: how much anti-cheat rigor
-   before it stops being fun to build? My lean: bounds + rate limits,
-   nothing fancier this year.
-7. **Sequencing vs LLM proxy**: unchanged recommendation — proxy first,
-   then Phases 0–1. Boards + wire alone will make the game feel
-   inhabited.
+1. **Turn budget — 50/day, bank 150, confirmed** (+100-turn signing
+   bonus). Our warps are content-dense (encounters, vignettes, quest
+   triggers) where TW2002 moves were cheap traversal, so 50 rich turns
+   ≈ its 200 thin ones. Revisit only if playtest shows sessions dying
+   mid-loop.
+2. **Death severity — keep the no-permadeath floor.** Losing an
+   uninsured, podless Wasp already costs six figures of hull and
+   outfit, everything in the hold, and a humiliating headline; the
+   bank and the story survive. That stings plenty for an 8-week
+   season; permadeath is a retention killer, and TW2002's cruelty was
+   a product of its era, not its genius.
+3. **Raid economics — reasoned now, tuned in playtest.** Scan 1 turn,
+   raid 3 turns (≈4 serious attempts/day for a dedicated hunter);
+   cloak detection 15% per sweep, 30% with a scanner gadget (expected
+   ~5–7 sweeps to find a cloaked ship — strong, not absolute); failed
+   sweeps tip off the hider 20% of the time. All four numbers are
+   server config, not client constants, so seasons can rebalance
+   without redeploying the app.
+4. **Anonymous wall posts — kept, and anonymity is real** (no paid
+   tracing; the 100 cr fee and the core-world notoriety gate are the
+   only limits). A bathroom wall where anonymity can be bought back
+   isn't a bathroom wall.
+5. **Defender AI default — flee-at-50%.** Preserves hulls (bounded
+   loss), generates escape stories for the news wire, and denies lazy
+   raiders a clean kill. Fight-to-the-end and surrender remain
+   opt-in postures for the brave and the pragmatic.
+6. **Anti-cheat — plausibility bounds and rate limits only, this
+   year.** Server caps per-sync resource deltas by ship class (bays ×
+   price ceilings, bounty tables), rejects impossible movement
+   (turns/fuel), logs anomalies for human review, bans nobody
+   automatically. Friendly seasons; rigor when stakes earn it.
+7. **Sequencing — LLM proxy first, then GALNET Phases 0–1.** The proxy
+   enriches every player including offline ones, and the season
+   chronicle + wall-replying dockworkers + ghost-parley all want it
+   live. Build order: proxy → core extraction (Phase 0) → wire +
+   boards (Phase 1) → turns/bank (2) → raids (3) → competition (4).
+
+Remaining before implementation: joint review of this v2 with Shon —
+then Phase 0 gets its own implementation spec for the Sonnet pipeline.
